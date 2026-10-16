@@ -1,170 +1,38 @@
-/* PayPilot AI dashboard */
-const $ = (s) => document.querySelector(s);
-
-function toast(msg, ok = true) {
-  const t = $("#toast");
-  t.textContent = msg;
-  t.className = "toast " + (ok ? "ok" : "err");
-  setTimeout(() => t.classList.add("hidden"), 4500);
-  t.classList.remove("hidden");
-}
-
-function showModal(text) {
-  $("#modal-text").textContent = text;
-  $("#modal").classList.remove("hidden");
-}
-function closeModal() { $("#modal").classList.add("hidden"); }
-
-const STATUS_BADGE = {
-  CREATED: "st-created", APPROVED: "st-approved", SAVED: "st-created",
-  COMPLETED: "st-captured", CAPTURED: "st-captured",
-  VOIDED: "st-voided", PAYER_ACTION_REQUIRED: "st-created",
-};
-
-async function api(path, opts) {
-  const r = await fetch(path, opts && {
-    method: opts.method || "POST",
-    headers: { "Content-Type": "application/json" },
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.detail || r.statusText);
-  return data;
-}
-
-/* ---------------- config badges ---------------- */
-async function loadConfig() {
-  try {
-    const c = await api("/api/config");
-    $("#config-badges").innerHTML = `
-      <span class="badge ${c.paypal_ready ? "ok" : "warn"}">PayPal ${c.paypal_ready ? "Sandbox ✓" : "⚠ not configured"}</span>
-      <span class="badge ok">AI: ${c.ai_provider}</span>`;
-  } catch { /* ignore */ }
-}
-
-/* ---------------- create payment ---------------- */
-async function createPayment(payload) {
-  $("#create-result").classList.add("hidden");
-  try {
-    const p = await api("/api/payments", { body: payload });
-    const box = $("#create-result");
-    box.innerHTML = `
-      <p>✅ Order <b>${p.paypal_order_id}</b> — ${p.amount.toFixed(2)} ${p.currency}</p>
-      <p class="muted">${p.description}</p>
-      <a class="paylink" href="${p.approve_link}" target="_blank">👉 Open PayPal Sandbox approval</a>
-      <p class="muted small">Log in with a <b>sandbox buyer</b> account, approve, then press “Sync” on the payment row.</p>`;
-    box.classList.remove("hidden");
-    toast("PayPal order created ⚡");
-    loadPayments();
-  } catch (e) {
-    toast(e.message, false);
-  }
-}
-
-$("#create-btn").onclick = () => {
-  const prompt = $("#prompt").value.trim();
-  if (prompt) createPayment({ prompt });
-};
-$("#prompt").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") $("#create-btn").click();
-});
-document.querySelectorAll(".chip").forEach((c) =>
-  c.onclick = () => { $("#prompt").value = c.dataset.prompt; $("#create-btn").click(); });
-
-$("#manual-btn").onclick = () => createPayment({
-  amount: parseFloat($("#m-amount").value),
-  currency: $("#m-currency").value || "USD",
-  description: $("#m-desc").value,
-  recipient_email: $("#m-email").value || null,
-});
-
-/* ---------------- payments table ---------------- */
-async function loadPayments() {
-  const rows = await api("/api/payments");
-  const tb = $("#payments tbody");
-  tb.innerHTML = "";
-  $("#empty").style.display = rows.length ? "none" : "block";
-  for (const p of rows) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td class="muted small">${p.created_at}</td>
-      <td>${esc(p.description)}</td>
-      <td><b>${p.amount.toFixed(2)}</b> ${p.currency}</td>
-      <td><span class="badge ${STATUS_BADGE[p.status] || "st-created"}">${p.status}</span></td>
-      <td class="muted small">${esc(p.payer_email || p.recipient_email || "—")}</td>
-      <td class="actions"></td>`;
-    const td = tr.querySelector(".actions");
-    if (p.approve_link && (p.status === "CREATED" || p.status === "SAVED")) {
-      td.appendChild(actionBtn("Approve ↗", () => window.open(p.approve_link, "_blank")));
-    }
-    td.appendChild(actionBtn("Sync", async () => {
-      try { await api(`/api/payments/${p.id}/refresh`, { body: {} }); loadPayments(); }
-      catch (e) { toast(e.message, false); }
-    }));
-    td.appendChild(actionBtn("Receipt", async () => {
-      try {
-        const r = await api(`/api/payments/${p.id}/receipt?regenerate=${p.status === "CAPTURED" ? "true" : "false"}`);
-        showModal(r.receipt);
-      } catch (e) { toast(e.message, false); }
-    }));
-    tb.appendChild(tr);
-  }
-}
-
-function actionBtn(label, fn) {
-  const b = document.createElement("button");
-  b.className = "ghost small"; b.textContent = label; b.onclick = fn;
-  return b;
-}
-
-$("#refresh-all").onclick = async () => {
-  const rows = await api("/api/payments");
-  for (const p of rows) {
-    if (["CREATED", "APPROVED", "SAVED"].includes(p.status)) {
-      try { await api(`/api/payments/${p.id}/refresh`, { body: {} }); } catch {}
-    }
-  }
-  loadPayments(); toast("Synced with PayPal ↻");
-};
-
-/* ---------------- insights / webhooks / outbox ---------------- */
-$("#insights-btn").onclick = async () => {
-  $("#insights").textContent = "Thinking…";
-  try {
-    const d = await api("/api/insights");
-    $("#insights").textContent = `Provider: ${d.provider}
-
-${d.insights}`;
-    $("#insights").classList.remove("muted");
-  } catch (e) { $("#insights").textContent = e.message; }
-};
-
-async function loadWebhooks() {
-  const rows = await api("/api/webhooks");
-  $("#webhooks").innerHTML = rows.length
-    ? rows.map((r) => `<li><b>${esc(r.event_type)}</b><span class="muted small"> ${r.received_at} · order ${esc(r.order_id || "—")}</span></li>`).join("")
-    : '<li class="muted">No events yet. Add the webhook URL in the PayPal dashboard (see README §4) or use the Sandbox webhook simulator.</li>';
-}
-
-async function loadOutbox() {
-  const rows = await api("/api/outbox");
-  $("#outbox").innerHTML = rows.length
-    ? rows.map((r) => `<li><b>${esc(r.subject)}</b><span class="muted small"> → ${esc(r.recipient || "")} · ${r.created_at}</span></li>`).join("")
-    : '<li class="muted">Receipts appear here after capture.</li>';
-}
-
-$("#wh-refresh").onclick = loadWebhooks;
-$("#ob-refresh").onclick = loadOutbox;
-
-function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-
-/* deep-link after PayPal redirect */
-const params = new URLSearchParams(location.search);
-if (params.get("cancelled")) toast("Payment cancelled by buyer.", false);
-if (params.get("approved")) { toast("Buyer returned — press Sync to capture 💰"); loadPayments(); }
-
-loadConfig(); loadPayments(); loadWebhooks(); loadOutbox();
-setInterval(loadPayments, 15000);
+'use strict';
+const $=s=>document.querySelector(s);
+const state={rows:[],analytics:null,role:null,config:null,view:'overview',requestKey:null};
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money=(n,c='USD')=>new Intl.NumberFormat('en-US',{style:'currency',currency:c,maximumFractionDigits:2}).format(n);
+const date=t=>new Date(t*1000).toLocaleDateString('en-US',{month:'short',day:'numeric'});
+const stamp=t=>new Date(t*1000).toLocaleString();
+function toast(message,error=false){$('#toast').textContent=message;$('#toast').className='toast'+(error?' error':'');clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').classList.add('hidden'),5000);}
+async function api(path,method='GET',body,headers={}){const r=await fetch(path,{method,headers:{'Content-Type':'application/json','X-PayPilot-Client':'dashboard',...headers},body:body===undefined?undefined:JSON.stringify(body)});const data=await r.json().catch(()=>({}));if(!r.ok){if(r.status===401&&!path.includes('/auth/'))showLogin();throw new Error(typeof data.detail==='string'?data.detail:'Check the entered values and try again.');}return data;}
+async function busy(button,fn){button.disabled=true;try{await fn();}catch(e){toast(e.message,true);}finally{button.disabled=false;}}
+function showLogin(){$('#welcome').classList.remove('hidden');$('#workspace').classList.add('hidden');state.role=null;}
+async function start(role){state.role=role;$('#welcome').classList.add('hidden');$('#workspace').classList.remove('hidden');state.config=await api('/api/config');$('#db-badge').textContent=state.config.database==='mysql'?'● MySQL connected':'● Demo storage · ephemeral';$('#workspace-mode').textContent=role==='demo'?'Isolated demo environment':'PayPal Sandbox workspace';$('#mode-banner').textContent=role==='demo'?'DEMO WORKSPACE · Fictional data. Simulated captures. No emails sent. '+(state.config.database==='sqlite'?'Data resets when this server restarts.':'Data stored in MySQL.'):'PAYPAL SANDBOX · Test funds only. Receipts and reminders stay in the controlled outbox.';await refresh();}
+async function refresh(){const [rows,analytics,rules]=await Promise.all([api('/api/payments'),api('/api/analytics'),api('/api/automations')]);state.rows=rows;state.analytics=analytics;$('#nav-count').textContent=rows.length;$('#rule-receipts').checked=rules.receipts;$('#rule-reminders').checked=rules.reminders;const previous=$('#currency-filter').value;const currencies=Object.keys(analytics.currencies);$('#currency-filter').innerHTML=(currencies.length?currencies:['USD']).map(c=>`<option>${esc(c)}</option>`).join('');if(currencies.includes(previous))$('#currency-filter').value=previous;renderStats();renderTables();if(state.view==='outbox')await loadOutbox();if(state.view==='activity')await loadActivity();}
+const pages={overview:['YOUR BUSINESS, AT A GLANCE','A little less chasing.<br>A lot more creating.','Your payments and follow-ups, all in one place.'],invoices:['YOUR WORK, ACCOUNTED FOR','Every invoice. In focus.','Create, track, and reconcile your payment requests.'],automations:['YOUR WORKFLOW, SIMPLIFIED','Put follow-ups on autopilot.','Useful rules with a clear record of every action.'],outbox:['MESSAGES, READY FOR REVIEW','A calmer customer inbox.','Receipts and reminders prepared by your workflows.'],activity:['VISIBILITY AT EVERY STEP','Nothing gets lost in the flow.','Trace invoice creation, captures, and automation runs.']};
+function view(name){state.view=name;document.querySelectorAll('.view').forEach(x=>x.classList.add('hidden'));$('#view-'+name).classList.remove('hidden');document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active',x.dataset.view===name));$('#page-eyebrow').textContent=pages[name][0];$('#page-title').innerHTML=pages[name][1];$('#page-subtitle').textContent=pages[name][2];$('#breadcrumb').textContent='Workspace / '+name.charAt(0).toUpperCase()+name.slice(1);if(name==='outbox')loadOutbox().catch(e=>toast(e.message,true));if(name==='activity')loadActivity().catch(e=>toast(e.message,true));}
+function renderStats(){const a=state.analytics,c=$('#currency-filter').value,t=a.currencies[c]||{captured:0,pending:0,overdue:0};$('#stat-captured').textContent=money(t.captured,c);$('#stat-pending').textContent=money(t.pending,c);$('#stat-overdue').textContent=money(t.overdue,c);$('#stat-conversion').textContent=a.conversion+'%';$('#overdue-caption').textContent=a.overdue_count+' overdue across all currencies';$('#insights').innerHTML=a.insights.map(x=>`<p>${esc(x)}</p>`).join('');const max=Math.max(1,...a.daily.map(d=>d.created));$('#chart').innerHTML=a.daily.map(d=>`<div class="chart-column" title="${esc(d.day)}: ${d.created} created, ${d.captured} captured"><span class="bar-count">${d.created}</span><div class="bar-pair"><div class="bar h${Math.round(d.created/max*8)}"></div><div class="bar captured h${Math.round(d.captured/max*8)}"></div></div><small>${new Date(d.day+'T12:00:00Z').toLocaleDateString('en-US',{weekday:'short'})}</small></div>`).join('');}
+const isOverdue=p=>p.status!=='CAPTURED'&&p.due_at<Date.now()/1000;
+function table(rows){if(!rows.length)return '<div class="empty">No invoices match. Create one to get started.</div>';return `<table><thead><tr><th>INVOICE / CUSTOMER</th><th>AMOUNT</th><th>DUE</th><th>STATUS</th><th>ACTIONS</th></tr></thead><tbody>${rows.map(p=>`<tr><td><strong>${esc(p.description)}</strong><small>${esc(p.recipient_email||'No customer email')} · ${esc(p.id.slice(0,8))}</small></td><td><strong>${money(p.amount,p.currency)}</strong><small>${esc(p.currency)}</small></td><td>${date(p.due_at)}</td><td><span class="status ${p.status==='CAPTURED'?'captured':isOverdue(p)?'overdue':''}">${p.status==='CAPTURED'?'✓ Captured':isOverdue(p)?'Overdue':esc(p.status==='PENDING'?'Setup pending':'Awaiting payment')}</span></td><td><div class="row-actions">${p.status==='CAPTURED'?`<button data-action="receipt" data-id="${p.id}">Receipt ↗</button>`:p.mode==='demo'?`<button data-action="simulate" data-id="${p.id}">Simulate capture</button>`:p.approve_link?`<a href="${esc(p.approve_link)}" target="_blank" rel="noopener noreferrer">Approve ↗</a><button data-action="refresh" data-id="${p.id}">Sync</button>`:'Configure sandbox'}</div></td></tr>`).join('')}</tbody></table>`;}
+function renderTables(){$('#recent-table').innerHTML=table(state.rows.slice(0,5));let rows=state.rows;const q=$('#search').value.toLowerCase(),status=$('#status-filter').value;if(q)rows=rows.filter(p=>[p.description,p.recipient_email,p.id].some(v=>String(v||'').toLowerCase().includes(q)));if(status==='CAPTURED')rows=rows.filter(p=>p.status==='CAPTURED');if(status==='pending')rows=rows.filter(p=>p.status!=='CAPTURED');if(status==='overdue')rows=rows.filter(isOverdue);$('#invoice-table').innerHTML=table(rows);}
+function details(title,body){$('#detail-title').textContent=title;$('#detail-body').textContent=body;$('#detail-dialog').showModal();}
+async function loadOutbox(){const rows=await api('/api/outbox');$('#outbox-list').innerHTML=rows.length?rows.map(r=>`<article class="card message-card"><div class="card-head"><span class="pill">${esc(r.kind.toUpperCase())}</span><small>${esc(stamp(r.created_at))}</small></div><h2>${esc(r.subject)}</h2><p>To: ${esc(r.recipient)}</p><pre>${esc(r.body)}</pre><small>PREVIEW ONLY · NOT SENT</small></article>`).join(''):'<div class="empty">No messages yet. Capture an invoice or run an overdue reminder batch.</div>';}
+async function loadActivity(){const rows=await api('/api/events');$('#activity-list').innerHTML=rows.map(r=>`<div class="timeline-item"><span class="timeline-dot"></span><div><strong>${esc(r.kind)}</strong><p>${esc(r.detail)}</p><small>${esc(stamp(r.created_at))}${r.payment_id?' · '+esc(r.payment_id.slice(0,8)):''}</small></div></div>`).join('')||'<div class="empty">Your activity will appear here.</div>';}
+$('#demo-login').onclick=e=>busy(e.currentTarget,async()=>{const r=await api('/api/auth/demo','POST',{});await start(r.role);});
+$('#login-form').onsubmit=async e=>{e.preventDefault();$('#login-error').textContent='';await busy(e.submitter,async()=>{try{const r=await api('/api/auth/login','POST',{password:$('#password').value});$('#password').value='';await start(r.role);}catch(error){$('#login-error').textContent=error.message;}});};
+$('#logout').onclick=e=>busy(e.currentTarget,async()=>{await api('/api/auth/logout','POST',{});showLogin();});
+document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>view(b.dataset.view));
+$('#all-invoices').onclick=()=>view('invoices');$('#review-overdue').onclick=()=>{$('#status-filter').value='overdue';renderTables();view('invoices');};
+$('#currency-filter').onchange=renderStats;$('#search').oninput=renderTables;$('#status-filter').onchange=renderTables;
+$('#new-invoice').onclick=()=>{$('#invoice-form').reset();$('#prompt').value='';$('#form-error').textContent='';$('#parser-status').textContent='Review the amount and currency before creating.';state.requestKey=crypto.randomUUID();$('#invoice-dialog').showModal();};
+document.querySelectorAll('.close-dialog').forEach(b=>b.onclick=()=>b.closest('dialog').close());
+$('#parse-prompt').onclick=e=>busy(e.currentTarget,async()=>{const p=await api('/api/parse','POST',{prompt:$('#prompt').value});$('#amount').value=p.amount;$('#currency').value=p.currency;$('#description').value=p.description;$('#recipient').value=p.recipient_email||'';$('#parser-status').textContent=p.provider+' · Check these details before confirming.';state.requestKey=crypto.randomUUID();});
+$('#invoice-form').oninput=()=>{state.requestKey=crypto.randomUUID();};
+$('#invoice-form').onsubmit=async e=>{e.preventDefault();$('#form-error').textContent='';await busy(e.submitter,async()=>{try{const p=await api('/api/payments','POST',{amount:$('#amount').value,currency:$('#currency').value,description:$('#description').value,recipient_email:$('#recipient').value||null,due_days:Number($('#due-days').value)},{'Idempotency-Key':state.requestKey});$('#invoice-dialog').close();await refresh();view('invoices');toast(p.mode==='demo'?'Demo invoice created. Try “Simulate capture”.':'Sandbox invoice created. Open approval to continue.');}catch(error){$('#form-error').textContent=error.message;}});};
+document.addEventListener('click',e=>{const b=e.target.closest('[data-action]');if(!b)return;busy(b,async()=>{if(b.dataset.action==='receipt'){const r=await api('/api/payments/'+b.dataset.id+'/receipt');details('Payment receipt',r.receipt);}else{await api('/api/payments/'+b.dataset.id+'/'+b.dataset.action,'POST',{});await refresh();toast(b.dataset.action==='simulate'?'Simulated capture confirmed. Receipt workflow applied.':'Sandbox status checked.');}});});
+$('#save-rules').onclick=e=>busy(e.currentTarget,async()=>{await api('/api/automations','PUT',{receipts:$('#rule-receipts').checked,reminders:$('#rule-reminders').checked});toast('Automation rules saved.');});
+$('#run-automation').onclick=e=>busy(e.currentTarget,async()=>{const r=await api('/api/automations/run','POST',{});$('#automation-result').textContent=`${r.queued} new message(s) prepared. ${r.delivery}.`;toast(r.queued+' new outbox item(s).');});
+$('#refresh-activity').onclick=e=>busy(e.currentTarget,loadActivity);
+(async()=>{try{const me=await api('/api/auth/me');await start(me.role);const checkout=new URLSearchParams(location.search).get('checkout');if(checkout){toast(checkout==='returned'?'Returned from PayPal. Use Sync on your invoice to verify capture.':'Checkout cancelled.');history.replaceState({},'',location.pathname);}}catch(e){showLogin();if(!e.message.includes('Sign in')&&!e.message.includes('Session expired'))$('#login-error').textContent=e.message;}})();

@@ -1,90 +1,18 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>PayPilot AI — PayPal x AI Payments Copilot</title>
-<link rel="stylesheet" href="/static/style.css" />
-</head>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#101e1a"><title>PayPilot — Your payments, on autopilot</title><link rel="stylesheet" href="/static/style.css"></head>
 <body>
-<header class="topbar">
-  <div class="brand">🧭 PayPilot <span>AI</span></div>
-  <div id="config-badges" class="badges"></div>
-</header>
-
-<main class="grid">
-  <!-- ============ Create payment ============ -->
-  <section class="card composer">
-    <h2>✨ Create a payment with plain English</h2>
-    <div class="examples">
-      Try:
-      <button class="chip" data-prompt="Charge $25.00 USD for a custom logo design">"Charge $25 for a custom logo design"</button>
-      <button class="chip" data-prompt="Send an invoice for 49.99 EUR for 2 hours of consulting to jane@example.com">"Invoice €49.99 consulting → jane@example.com"</button>
-      <button class="chip" data-prompt="Charge 10 dollars for a handmade bracelet, currency USD">"Charge $10 for a handmade bracelet"</button>
-    </div>
-    <div class="inputrow">
-      <input id="prompt" type="text" placeholder="e.g. Charge $99.50 USD for a website audit…" />
-      <button id="create-btn">Create PayPal link ⚡</button>
-    </div>
-    <div id="create-result" class="result hidden"></div>
-
-    <details class="manual">
-      <summary>Or enter details manually</summary>
-      <div class="manual-grid">
-        <input id="m-amount" type="number" min="1" step="0.01" placeholder="Amount" />
-        <input id="m-currency" type="text" value="USD" maxlength="3" />
-        <input id="m-desc" type="text" placeholder="Description" />
-        <input id="m-email" type="email" placeholder="Recipient email (optional)" />
-        <button id="manual-btn">Create</button>
-      </div>
-    </details>
-  </section>
-
-  <!-- ============ Payments table ============ -->
-  <section class="card wide">
-    <div class="card-head">
-      <h2>💳 Payments</h2>
-      <button id="refresh-all" class="ghost">↻ Sync all with PayPal</button>
-    </div>
-    <table id="payments">
-      <thead><tr>
-        <th>Created</th><th>Description</th><th>Amount</th><th>Status</th><th>Payer</th><th></th>
-      </tr></thead>
-      <tbody></tbody>
-    </table>
-    <p id="empty" class="muted">No payments yet — create one above.</p>
-  </section>
-
-  <!-- ============ AI insights ============ -->
-  <section class="card">
-    <div class="card-head"><h2>🤖 AI Insights</h2>
-      <button id="insights-btn" class="ghost">Analyze</button></div>
-    <pre id="insights" class="insights muted">Click “Analyze” for an AI summary of your payments.</pre>
-  </section>
-
-  <!-- ============ Webhook log ============ -->
-  <section class="card">
-    <div class="card-head"><h2>📡 PayPal Webhooks</h2>
-      <button id="wh-refresh" class="ghost">↻</button></div>
-    <ul id="webhooks" class="log"><li class="muted">Waiting for events…</li></ul>
-  </section>
-
-  <!-- ============ Receipt outbox ============ -->
-  <section class="card">
-    <div class="card-head"><h2>📬 Receipt Outbox</h2>
-      <button id="ob-refresh" class="ghost">↻</button></div>
-    <ul id="outbox" class="log"><li class="muted">Receipts appear here after capture.</li></ul>
-  </section>
-</main>
-
-<div id="toast" class="toast hidden"></div>
-<div id="modal" class="modal hidden">
-  <div class="modal-body">
-    <button class="modal-close" onclick="closeModal()">✕</button>
-    <pre id="modal-text"></pre>
-  </div>
-</div>
-
-<script src="/static/app.js"></script>
-</body>
-</html>
+<div id="welcome" class="welcome"><div class="welcome-art"><a class="brand" href="/">◈ <span>PayPilot<small>PAYMENTS COPILOT</small></span></a><div><span class="eyebrow">LESS ADMIN. MORE MOMENTUM.</span><h1>Your work deserves<br>a smoother payday.</h1><p>Turn a sentence into an invoice. Keep every payment in sight. Let the follow-up take care of itself.</p><div class="sample-card"><span>PAYMENT CAPTURED</span><strong>$1,250.00 <small>USD</small></strong><p>Website development · Northstar Labs</p><div>✓ Receipt created &nbsp; ✓ Activity recorded</div></div></div><small>Built by Asad Hussain · Hackathon edition</small></div><section class="welcome-form"><span class="eyebrow">WELCOME TO YOUR CONTROL ROOM</span><h2>Meet your payment copilot.</h2><p>Explore a private demo workspace with fictional invoices, simulated payments, and working automation.</p><button id="demo-login" class="primary large">Launch interactive demo <span>↗</span></button><p class="caption">No account needed. No real money. Your demo is separate from other visitors.</p><div class="divider">OR OPEN YOUR WORKSPACE</div><form id="login-form"><label for="password">Administrator password</label><input id="password" type="password" autocomplete="current-password" placeholder="Enter your workspace password" required><button class="secondary large">Sign in to sandbox workspace →</button></form><p id="login-error" role="alert"></p><div class="trust">◉ PayPal Sandbox &nbsp; ◉ MySQL ready &nbsp; ◉ Private sessions</div></section></div>
+<div id="workspace" class="hidden shell"><aside class="sidebar"><a class="brand" href="/">◈ <span>PayPilot<small>PAYMENTS COPILOT</small></span></a><div class="workspace-label"><span class="avatar">AH</span><div>Studio workspace<small id="workspace-mode">Demo environment</small></div></div><span class="nav-label">WORKSPACE</span><nav><button data-view="overview" class="active">◫ <span>Overview</span></button><button data-view="invoices">▤ <span>Invoices</span><b id="nav-count">0</b></button><button data-view="automations">⌘ <span>Automations</span></button><button data-view="outbox">✉ <span>Outbox</span></button><button data-view="activity">◷ <span>Activity log</span></button></nav><div class="sidebar-bottom"><div class="sandbox-note"><span class="live-dot"></span> A safe place to explore<p>Sandbox and simulated payments only. No real funds move.</p></div><button id="logout" class="logout">↪ End session</button><small>PAYPILOT / HACKATHON EDITION</small></div></aside>
+<div class="main-wrap"><header class="topbar"><span id="breadcrumb">Workspace / <b>Overview</b></span><div><span id="db-badge" class="pill">Connecting…</span><span class="avatar small-avatar">AH</span></div></header><main>
+<div class="page-heading"><div><span class="eyebrow" id="page-eyebrow">YOUR BUSINESS, AT A GLANCE</span><h1 id="page-title">A little less chasing.<br>A lot more creating.</h1><p id="page-subtitle">Your payments and follow-ups, all in one place.</p></div><button id="new-invoice" class="primary">＋ Create invoice</button></div>
+<div id="mode-banner" class="mode-banner"></div>
+<section id="view-overview" class="view"><div class="section-top"><span class="eyebrow">PAYMENT SNAPSHOT</span><select id="currency-filter" aria-label="Analytics currency"><option>USD</option></select></div><div class="stats"><article><span>Captured revenue <i>↗</i></span><strong id="stat-captured">—</strong><small>Confirmed captures only</small></article><article><span>Outstanding <i>◷</i></span><strong id="stat-pending">—</strong><small>Awaiting payment</small></article><article><span>Overdue <i>!</i></span><strong id="stat-overdue">—</strong><small id="overdue-caption">Needs a follow-up</small></article><article><span>Capture rate <i>◉</i></span><strong id="stat-conversion">—</strong><small>Across all invoices</small></article></div>
+<div class="overview-grid"><article class="card chart-card"><div class="card-head"><div><h2>Invoice momentum</h2><p>Created in the last 7 days · counts, not value</p></div><span class="pill">7 DAYS</span></div><div id="chart" class="chart" aria-label="Daily invoice counts"></div><div class="chart-legend"><span>● Created</span><span>● Captured from this cohort</span></div></article><article class="copilot-card"><span class="eyebrow">◈ COPILOT BRIEF</span><h2>Your next best move.</h2><div id="insights"></div><button id="review-overdue">Review outstanding invoices ↗</button><small>Deterministic insights from your workspace data</small></article></div>
+<article class="card"><div class="card-head"><div><h2>Recent invoices</h2><p>A clear view of where things stand.</p></div><button id="all-invoices" class="text-button">View all →</button></div><div id="recent-table" class="table-wrap"></div></article></section>
+<section id="view-invoices" class="view hidden"><article class="card"><div class="filters"><input id="search" placeholder="Search description, customer, or reference…" aria-label="Search invoices"><select id="status-filter" aria-label="Invoice status"><option value="all">All statuses</option><option value="CAPTURED">Captured</option><option value="pending">Outstanding</option><option value="overdue">Overdue</option></select><a class="secondary" href="/api/export">↓ Export CSV</a></div><div id="invoice-table" class="table-wrap"></div></article></section>
+<section id="view-automations" class="view hidden"><div class="automation-intro"><span class="eyebrow">SMALL RULES. BIG TIME SAVINGS.</span><h2>Let the routine take care of itself.</h2><p>Capture triggers receipts immediately. Run overdue reminders whenever you need them. All messages stay in the demo outbox.</p></div><div class="rule-grid"><article class="card rule"><span class="rule-icon">✉</span><label class="switch"><input id="rule-receipts" type="checkbox" checked> Enabled</label><h2>Instant receipts</h2><p>When a payment is captured, create its receipt and record the action automatically.</p><div class="rule-flow">Payment captured <span>→</span> Receipt in outbox</div><small>Runs on capture · one receipt per invoice</small></article><article class="card rule"><span class="rule-icon">◷</span><label class="switch"><input id="rule-reminders" type="checkbox" checked> Enabled</label><h2>Overdue follow-ups</h2><p>Find unpaid invoices past their due date and prepare a customer reminder.</p><div class="rule-flow">Invoice overdue <span>→</span> Reminder in outbox</div><small>Manual batch · one reminder per day</small></article></div><div class="automation-actions"><button id="save-rules" class="secondary">Save rules</button><button id="run-automation" class="primary">▶ Run automation now</button></div><p id="automation-result" role="status"></p><article class="card integration-card"><h2>Designed for a convincing live demo</h2><p>Run a batch twice to show duplicate prevention. Open Activity log to trace each action. External email delivery is disabled, so a demo cannot accidentally notify real customers.</p></article></section>
+<section id="view-outbox" class="view hidden"><div class="info-line">✉ Controlled delivery preview — these messages have not been emailed.</div><div id="outbox-list" class="message-list"></div></section>
+<section id="view-activity" class="view hidden"><article class="card"><div class="card-head"><h2>Every action leaves a trail.</h2><button id="refresh-activity" class="text-button">↻ Refresh</button></div><div id="activity-list" class="timeline"></div></article></section>
+<footer>Built for the people behind the invoices.<span>PayPilot v2 · Sandbox only</span></footer>
+</main></div></div>
+<dialog id="invoice-dialog"><div class="dialog-head"><div><span class="eyebrow">FROM WORDS TO WORKFLOW</span><h2>Create an invoice</h2></div><button class="close-dialog" aria-label="Close invoice dialog">✕</button></div><div class="prompt-box"><label for="prompt">Describe what you’re charging for</label><textarea id="prompt" rows="2" placeholder="Charge $250 USD for a logo design to maya@example.com"></textarea><button id="parse-prompt" class="secondary">✧ Fill details from prompt</button><small id="parser-status">Review the amount and currency before creating.</small></div><form id="invoice-form"><div class="form-grid"><label>Amount<input id="amount" type="number" step="0.01" min="0.01" max="9999999" required></label><label>Currency<select id="currency"><option>USD</option><option>EUR</option><option>GBP</option><option>CAD</option><option>AUD</option><option>SGD</option></select></label></div><label>Description<input id="description" maxlength="240" required placeholder="Logo design"></label><label>Customer email<input id="recipient" type="email" placeholder="customer@example.com"></label><label>Due in<select id="due-days"><option value="0">Today</option><option value="7" selected>7 days</option><option value="14">14 days</option><option value="30">30 days</option></select></label><p class="caption">This creates a sandbox or simulated invoice. It does not send an email or move real money.</p><button class="primary large" id="submit-invoice">Create invoice →</button><p id="form-error" role="alert"></p></form></dialog>
+<dialog id="detail-dialog"><div class="dialog-head"><h2 id="detail-title">Details</h2><button class="close-dialog" aria-label="Close details">✕</button></div><pre id="detail-body"></pre></dialog><div id="toast" class="toast hidden" role="status"></div><script src="/static/app.js"></script></body></html>

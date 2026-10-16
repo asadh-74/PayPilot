@@ -13,6 +13,8 @@ class PayPalClient:
         self.client_id = client_id or os.getenv("PAYPAL_CLIENT_ID", "")
         self.client_secret = client_secret or os.getenv("PAYPAL_CLIENT_SECRET", "")
         self.base = os.getenv("PAYPAL_BASE_URL", PAYPAL_BASE)
+        if self.base != "https://api-m.sandbox.paypal.com":
+            raise RuntimeError("Only PayPal Sandbox is supported")
         self._token = None
         self._token_exp = 0.0
 
@@ -71,7 +73,7 @@ class PayPalClient:
             },
         }
         r = requests.post(f"{self.base}/v2/checkout/orders",
-                          headers=self._headers(), json=payload, timeout=30)
+                          headers={**self._headers(), "PayPal-Request-Id": reference_id}, json=payload, timeout=30)
         r.raise_for_status()
         return r.json()
 
@@ -83,9 +85,23 @@ class PayPalClient:
 
     def capture_order(self, order_id: str) -> dict:
         r = requests.post(f"{self.base}/v2/checkout/orders/{order_id}/capture",
-                          headers=self._headers(), timeout=30)
+                          headers={**self._headers(), "PayPal-Request-Id": f"capture-{order_id}"}, json={}, timeout=30)
         r.raise_for_status()
         return r.json()
+
+    def verify_webhook(self, headers, payload):
+        webhook_id = os.getenv("PAYPAL_WEBHOOK_ID")
+        if not webhook_id:
+            return False
+        body = {key: headers.get("paypal-" + key.replace("_", "-")) for key in
+                ("auth_algo", "cert_url", "transmission_id", "transmission_sig", "transmission_time")}
+        if not all(body.values()):
+            return False
+        body.update(webhook_id=webhook_id, webhook_event=payload)
+        response = requests.post(f"{self.base}/v1/notifications/verify-webhook-signature",
+                                 headers=self._headers(), json=body, timeout=30)
+        response.raise_for_status()
+        return response.json().get("verification_status") == "SUCCESS"
 
     @staticmethod
     def approve_link(order: dict) -> str | None:

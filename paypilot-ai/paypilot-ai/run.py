@@ -1,8 +1,5 @@
-"""Convenience launcher: python run.py"""
+"""Local launcher. Hosted deployments use the explicit Render command."""
 import os
-import sys
-
-if sys.version_info < (3, 10):
-    sys.exit("Python 3.10+ required.")
-
-os.system(f"{sys.executable} -m uvicorn app.main:app --reload --port {os.getenv('PORT', '8000')}")
+import uvicorn
+if __name__ == '__main__':
+    uvicorn.run('app.main:app',host='0.0.0.0',port=int(os.getenv('PORT','8000')))

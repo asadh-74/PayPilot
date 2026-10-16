@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: paypilot
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: cd paypilot-ai/paypilot-ai && uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: REQUIRE_MYSQL
+        value: "true"
+      - key: DATABASE_URL
+        sync: false
+      - key: MYSQL_SSL_CA
+        sync: false
+      - key: ADMIN_PASSWORD
+        generateValue: true
+      - key: DEMO_ENABLED
+        value: "true"
+      - key: APP_BASE_URL
+        sync: false

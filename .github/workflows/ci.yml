@@ -1,0 +1,29 @@
+name: PayPilot checks
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: test-only-password
+          MYSQL_DATABASE: paypilot_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r paypilot-ai/paypilot-ai/requirements-dev.txt
+      - run: python -m pytest -q
+        working-directory: paypilot-ai/paypilot-ai
+      - run: python -m pytest -q
+        working-directory: paypilot-ai/paypilot-ai
+        env:
+          TEST_MYSQL_URL: mysql+pymysql://root:test-only-password@127.0.0.1:3306/paypilot_test
+      - run: node --check paypilot-ai/paypilot-ai/app/static/app.js

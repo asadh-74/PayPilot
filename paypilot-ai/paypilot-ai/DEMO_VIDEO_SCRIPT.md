@@ -1,42 +1,19 @@
-# Demo Video Script — PayPilot AI (< 3 minutes)
+# PayPilot: three-minute hackathon demo
 
-## Shot list / narration
+**0:00 — Problem.** Freelancers lose time creating invoices, tracking unpaid work, and preparing follow-ups. PayPilot puts those tasks in one workspace.
 
-**0:00–0:15 — Hook**
-(Show Devpost title card + app homepage)
-"Meet PayPilot AI — type a sentence, get a PayPal payment link, and let AI run
-your receipts and analytics. Built on the PayPal sandbox, so every transaction
-you'll see is real API traffic with zero real money."
+**0:20 — One-click demo.** Launch the interactive demo. Explain that its fictional customers and simulated payments are private to this session. Point out the storage badge accurately.
 
-**0:15–0:40 — PayPal sandbox setup (fast cuts)**
-(Developer dashboard → Apps & Credentials → show Client ID/Secret being copied;
-.env being filled)
-"Two sandbox credentials are all you need. Paste them in, run one command —
-`python run.py` — and the copilot is live."
+**0:40 — Natural-language invoice.** Create invoice → type `Charge $250 USD for a logo design to maya@example.com` → fill details. Show amount, currency, email and due date. Review, then confirm.
 
-**0:40–1:20 — Core demo: natural language → captured payment**
-(Type: "Charge $25.00 USD for a custom logo design" → click Create)
-"The AI parses amount, currency and description instantly. PayPilot creates a
-PayPal Order through the Orders v2 API…" (show approve link)
-"…and opens sandbox checkout. I'll approve as a sandbox buyer…"
-(approve in PayPal popup, return to dashboard, hit Sync — status flips to CAPTURED)
-"…sync captures the funds server-side. Payment complete."
+**1:10 — Payment lifecycle.** Click Simulate capture. Explain that no PayPal request or real transfer is made in this mode. Show Captured, then open the receipt.
 
-**1:20–1:50 — AI receipts + webhooks**
-(Open Receipt modal; show outbox entry; show webhook log with PAYMENT.CAPTURE.COMPLETED)
-"The moment money moves, PayPal's webhook hits our endpoint, the payment status
-updates automatically, and an LLM writes the receipt — delivered to the outbox
-or via real SMTP."
+**1:35 — Automation.** Open Automations and run the overdue batch. Open Outbox to show the prepared reminders. Run the batch again: zero new messages demonstrates daily deduplication.
 
-**1:50–2:20 — AI insights + provider flexibility**
-(Click Analyze; show generated insights. Show config badge switching AI providers)
-"One click turns raw transactions into insights — totals, pipeline, anomalies.
-And the AI layer is swappable: OpenAI, Claude, or fully-local Ollama… or nothing
-at all, thanks to the offline fallback."
+**2:00 — Visibility.** Open Activity log to trace invoice creation, capture, and receipt creation. Show search, currency-specific totals, and CSV export.
 
-**2:20–2:45 — Wrap-up**
-(Dashboard wide shot)
-"PayPilot AI: sentence in, payment out, insights on top — PayPal sandbox plus
-the AI provider of your choice. Open source, five-minute setup. Try it yourself."
+**2:30 — Architecture.** Explain FastAPI + SQLAlchemy, MySQL on Aiven with verified TLS, Render hosting, isolated sessions, request idempotency and verified PayPal Sandbox webhooks. Only claim Aiven is connected if the live badge/health endpoint reports MySQL.
 
-**End card:** repo URL + "PayPal AI Hackathon 2026"
+**2:50 — Close.** “From one sentence to an invoice, a captured payment, and a traceable receipt — with less chasing.”
+
+Optional second recording: use the administrator workspace with configured PayPal Sandbox credentials and a sandbox buyer account to demonstrate real sandbox approval and Sync. Never show credentials, personal mailbox data, or live accounts in the video.

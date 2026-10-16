@@ -71,7 +71,7 @@ def ai_chat(system: str, user: str) -> str | None:
             return _call_openai(system, user)
         if os.getenv("ANTHROPIC_API_KEY"):
             return _call_anthropic(system, user)
-        if os.getenv("OLLAMA_HOST") or _ollama_alive():
+        if os.getenv("OLLAMA_HOST"):
             return _call_ollama(system, user)
     except Exception:
         return None
@@ -92,7 +92,7 @@ def active_provider() -> str:
         return f"OpenAI ({OPENAI_MODEL})"
     if os.getenv("ANTHROPIC_API_KEY"):
         return f"Anthropic ({ANTHROPIC_MODEL})"
-    if os.getenv("OLLAMA_HOST") or _ollama_alive():
+    if os.getenv("OLLAMA_HOST"):
         return f"Ollama ({OLLAMA_MODEL}, local)"
     return "Offline fallback (regex + heuristics)"
 
@@ -126,30 +126,31 @@ def parse_payment_prompt(text: str) -> dict:
 
 
 def _regex_extract(text: str) -> dict:
-    """Always-available fallback parser (offline mode)."""
+    """Conservative offline parser; ambiguous amounts require manual review."""
     email = re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", text)
-    curr = next((c for c in CURRENCIES if re.search(rf"\b{c}\b", text, re.I)), "USD")
-    amount = None
-    m = re.search(r"(?:[$€£]\s?)(\d+(?:[.,]\d{1,2})?)", text)
-    if m:
-        amount = float(m.group(1).replace(",", ""))
-    else:
-        m = re.search(r"(\d+(?:[.,]\d{1,2})?)\s*(?:dollars?|usd|eur|gbp)", text, re.I)
-        if m:
-            amount = float(m.group(1).replace(",", ""))
-    words = {"ten": 10, "twenty": 20, "twenty five": 25, "thirty": 30,
-             "fifty": 50, "seventy five": 75, "hundred": 100}
-    if amount is None:
-        low = text.lower()
-        for w, v in words.items():
-            if f"${w}" in low or f"{w} dollars" in low:
-                amount = float(v)
-                break
-    if amount is None:
-        raise ValueError(
-            "Could not determine an amount. Try: 'Charge $25.00 USD for a logo design'")
-    desc = re.sub(r"\s+", " ", text).strip()[:120]
-    return {"amount": round(amount, 2), "currency": curr, "description": desc,
+    supported = {"USD", "EUR", "GBP", "CAD", "AUD", "SGD"}
+    currency_codes = re.findall(r"\b(?:USD|EUR|GBP|CAD|AUD|SGD|JPY|INR|PKR|BRL|MXN)\b", text, re.I)
+    codes = {c.upper() for c in currency_codes}
+    if len(codes) > 1 or (codes and not codes <= supported):
+        raise ValueError("Unsupported or ambiguous currency")
+    symbol_currency = "EUR" if "€" in text else "GBP" if "£" in text else "USD"
+    curr = next(iter(codes), symbol_currency)
+    if ("€" in text and curr != "EUR") or ("£" in text and curr != "GBP"):
+        raise ValueError("Conflicting currency")
+    pattern = r"(?:[$€£]\s*|\b(?:USD|EUR|GBP|CAD|AUD|SGD)\s+)(\d+(?:,\d{3})*(?:\.\d{1,2})?)(?![\d.,])"
+    matches = re.findall(pattern, text, re.I)
+    if not matches:
+        matches = re.findall(r"\b(\d+(?:,\d{3})*(?:\.\d{1,2})?)\s*(?:dollars?|USD|EUR|GBP|CAD|AUD|SGD)\b", text, re.I)
+    if len(matches) != 1:
+        raise ValueError("Provide one unambiguous amount")
+    from decimal import Decimal
+    amount = Decimal(matches[0].replace(",", ""))
+    if amount <= 0 or re.search(r"-\s*[$€£]?\s*\d", text):
+        raise ValueError("Amount must be positive")
+    desc = text.split(" for ", 1)[-1]
+    if email:
+        desc = desc.replace(email.group(0), "").rstrip(" to,")
+    return {"amount": str(amount), "currency": curr, "description": desc.strip()[:240],
             "recipient_email": email.group(0) if email else None}
 
 
