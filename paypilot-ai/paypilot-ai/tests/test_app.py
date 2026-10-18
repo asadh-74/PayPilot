@@ -16,6 +16,7 @@ def client(tmp_path,monkeypatch):
     monkeypatch.setenv('COOKIE_SECURE','false')
     monkeypatch.setenv('DEMO_ENABLED','true')
     monkeypatch.setenv('REQUIRE_MYSQL','false')
+    monkeypatch.setenv('AUTOMATION_ENABLED','false')
     limits.clear()
     if os.getenv('TEST_MYSQL_URL'):
         def mysql_init():
@@ -151,3 +152,67 @@ def test_health_and_headers(client):
     r=client.get('/')
     assert r.status_code==200 and 'Content-Security-Policy' in r.headers
     assert client.get('/static/app.js').status_code==200
+
+
+
+def test_collections_currency_aging_and_isolation(client):
+    import time
+    demo(client)
+    pid=create(client, amount='99.95', currency='EUR').json()['id']
+    with db.engine.begin() as conn:
+        conn.execute(update(db.payments).where(db.payments.c.id==pid).values(due_at=time.time()-40*86400))
+    result=client.get('/api/collections').json()
+    assert result['currencies']['EUR']['days_31_plus']=='99.95'
+    assert result['currencies']['USD']['days_1_7']=='2720.00'
+    assert result['priorities'][0]['id']==pid
+    demo(client)
+    assert 'EUR' not in client.get('/api/collections').json()['currencies']
+
+
+def test_scheduler_tick_dedup_disabled_rules_and_expired_session(client):
+    import time
+    from app.main import automation_tick
+    demo(client)
+    automation_tick()
+    assert len([r for r in client.get('/api/outbox').json() if r['kind']=='reminder'])==2
+    automation_tick()
+    assert len([r for r in client.get('/api/outbox').json() if r['kind']=='reminder'])==2
+    assert client.get('/api/automations/status').json()['last_action_at'] is not None
+    demo(client)
+    client.put('/api/automations',json={'receipts':False,'reminders':False})
+    automation_tick()
+    assert not [r for r in client.get('/api/outbox').json() if r['kind']=='reminder']
+    client.put('/api/automations',json={'receipts':True,'reminders':True})
+    with db.engine.begin() as conn:
+        conn.execute(update(db.sessions).values(expires_at=time.time()-1))
+        before=conn.scalar(select(func.count()).select_from(db.outbox))
+    automation_tick()
+    with db.engine.connect() as conn:
+        assert conn.scalar(select(func.count()).select_from(db.outbox))==before
+
+
+def test_new_endpoints_require_auth(client):
+    assert client.get('/api/collections').status_code==401
+    assert client.get('/api/automations/status').status_code==401
+
+
+def test_background_loop_starts_runs_and_stops(client, monkeypatch):
+    import time
+    from threading import Event, Thread
+    from app.main import automation_loop
+    demo(client)
+    monkeypatch.setattr('app.main.scheduler_interval', lambda: 0.02)
+    stop = Event()
+    worker = Thread(target=automation_loop, args=(stop,))
+    worker.start()
+    try:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if client.get('/api/automations/status').json()['last_action_at']:
+                break
+            time.sleep(0.02)
+        assert client.get('/api/automations/status').json()['last_action_at']
+    finally:
+        stop.set()
+        worker.join(2)
+    assert not worker.is_alive()

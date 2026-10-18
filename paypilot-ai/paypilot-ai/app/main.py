@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Event, Thread
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -33,10 +33,20 @@ limit_lock = Lock()
 @asynccontextmanager
 async def lifespan(app):
     db.init_db()
-    yield
-    db.engine.dispose()
+    stop = Event()
+    worker = None
+    if scheduler_enabled():
+        worker = Thread(target=automation_loop, args=(stop,), daemon=True, name='paypilot-automation')
+        worker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        if worker:
+            worker.join(timeout=25)
+        db.engine.dispose()
 
-app = FastAPI(title='PayPilot API', version='2.0.0', lifespan=lifespan,
+app = FastAPI(title='PayPilot API', version='2.1.0', lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
 app.mount('/static', StaticFiles(directory=STATIC), name='static')
 
@@ -175,7 +185,7 @@ def health():
     try:
         with db.engine.connect() as conn:
             conn.execute(text('SELECT 1'))
-        return {'status':'ok','database':db.engine.dialect.name,'version':'2.0.0'}
+        return {'status':'ok','database':db.engine.dialect.name,'version':'2.1.0'}
     except Exception:
         raise HTTPException(503,'Database is not ready')
 
@@ -371,7 +381,8 @@ def run_rules(user=Depends(security.current_user)):
                 queued+=queue_message(conn,p,'receipt',f"receipt-{p['id']}")
             elif p['status']!='CAPTURED' and p['due_at']<time.time() and rule['reminders']:
                 queued+=queue_message(conn,p,'reminder',f"reminder-{p['id']}-{day}")
-        audit(conn,user['id'],None,'automation.run',f'{queued} new outbox item(s); daily deduplication applied')
+        if queued:
+            audit(conn,user['id'],None,'automation.run',f'{queued} new outbox item(s); daily deduplication applied')
     return {'queued':queued,'delivery':'controlled outbox; no external messages sent'}
 
 @app.get('/api/outbox')
@@ -438,3 +449,79 @@ def payment_return(token: str=''):
 @app.get('/cancel')
 def payment_cancel():
     return RedirectResponse('/?checkout=cancelled')
+
+
+
+def scheduler_enabled():
+    return os.getenv('AUTOMATION_ENABLED', 'true').lower() == 'true'
+
+
+def scheduler_interval():
+    try:
+        return max(60, min(86400, int(os.getenv('AUTOMATION_INTERVAL_SECONDS', '300'))))
+    except ValueError:
+        return 300
+
+
+def automation_tick():
+    """Process only workspaces with an unexpired session; never send externally."""
+    with db.engine.connect() as conn:
+        owners = conn.execute(select(db.users.c.id, db.users.c.role).where(
+            db.users.c.id.in_(select(db.sessions.c.user_id).where(
+                db.sessions.c.expires_at > time.time())))).mappings().all()
+    for owner in owners:
+        try:
+            run_rules(dict(owner))
+        except Exception:
+            # Keep other workspaces running; do not log database secrets.
+            import logging
+            logging.getLogger(__name__).warning('Automation workspace pass failed; will retry next interval')
+
+
+def automation_loop(stop):
+    while not stop.wait(scheduler_interval()):
+        try:
+            automation_tick()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning('Automation database pass failed; will retry next interval')
+
+
+@app.get('/api/automations/status')
+def automation_status(user=Depends(security.current_user)):
+    with db.engine.connect() as conn:
+        last = conn.execute(select(db.events.c.created_at).where(
+            db.events.c.owner_id == user['id'], db.events.c.kind == 'automation.run'
+        ).order_by(db.events.c.created_at.desc()).limit(1)).scalar()
+    return {'enabled': scheduler_enabled(), 'interval_seconds': scheduler_interval(),
+            'last_action_at': last, 'delivery': 'preview_only',
+            'scope': 'Workspaces with an active session. Runs while the server is awake.'}
+
+
+@app.get('/api/collections')
+def collections(user=Depends(security.current_user)):
+    """Explainable due-date planning; no FX or predictive payment claims."""
+    now = time.time()
+    groups = {}
+    priorities = []
+    for p in list_payments(user):
+        if p['status'] == 'CAPTURED':
+            continue
+        days = (now - p['due_at']) / 86400
+        bucket = 'not_due' if days <= 0 else 'days_1_7' if days <= 7 else 'days_8_30' if days <= 30 else 'days_31_plus'
+        group = groups.setdefault(p['currency'], {k: Decimal('0') for k in (
+            'not_due', 'days_1_7', 'days_8_30', 'days_31_plus', 'due_next_7_days')})
+        amount = Decimal(str(p['amount']))
+        group[bucket] += amount
+        if now <= p['due_at'] <= now + 7 * 86400:
+            group['due_next_7_days'] += amount
+        if days > 0:
+            priorities.append({'id': p['id'], 'description': p['description'],
+                'amount': str(amount), 'currency': p['currency'],
+                'days_overdue': max(1, int(days)), 'due_at': p['due_at'],
+                'reason': 'Checkout setup incomplete' if p['status'] == 'PENDING' else 'Past invoice due date',
+                'next_action': 'Configure sandbox and retry original request' if p['status'] == 'PENDING' else 'Prepare overdue follow-up'})
+    priorities.sort(key=lambda p: p['due_at'])
+    return {'currencies': {c: {k: str(v.quantize(Decimal('.01'))) for k, v in g.items()} for c, g in groups.items()},
+            'priorities': priorities, 'as_of': now,
+            'basis': 'Invoice due dates, not a prediction of collection. Currencies are never combined.'}
