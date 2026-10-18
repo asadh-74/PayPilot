@@ -65,7 +65,7 @@ The backend health check is `/health`. Existing MySQL startup validates certific
 
 ## Storage and compatibility
 
-Existing `pp_payments`, item, reference, share-link and workspace-preference records remain supported. This integration adds only **`pp_invoice_metadata`** for customer names, customer notes and issue dates. SQLAlchemy creates the additive table at startup; no existing payment columns are altered. Back up production before any approved release. Rolling back the application can leave this additive table in place.
+Existing `pp_payments`, item, reference, share-link and workspace-preference records remain supported. This integration adds only **`pp_invoice_metadata`** for customer names, customer notes and issue dates. SQLAlchemy creates the additive table at startup; legacy MySQL timestamp columns are widened from FLOAT to DOUBLE for expiry precision. No records are deleted. Back up production before any approved release. Rolling back the application can leave this additive table in place.
 
 New API fields `customer_name`, `notes`, `issue_date` and `due_date` are optional, preserving older invoice requests. `/api/workspace/snapshot` is administrator-only and scopes invoice metadata, items, references, drafts and events to the authenticated workspace. HttpOnly session cookies and request verification headers protect mutations. Browser JavaScript uses external same-origin assets under a strict `script-src 'self'` policy; inline style attributes are permitted for layout. Private records and passwords are not persisted in localStorage.
 

@@ -2,16 +2,16 @@
 import os
 import ssl
 from sqlalchemy import (create_engine, MetaData, Table, Column, String, Text,
-                        Integer, Numeric, Float, UniqueConstraint)
+                        Integer, Numeric, Float, UniqueConstraint, inspect, text)
 from sqlalchemy.engine import make_url
 
 metadata = MetaData()
 users = Table('pp_users', metadata,
     Column('id', String(64), primary_key=True), Column('role', String(16)),
-    Column('created_at', Float))
+    Column('created_at', Float(53)))
 sessions = Table('pp_sessions', metadata,
     Column('token_hash', String(64), primary_key=True),
-    Column('user_id', String(64), nullable=False), Column('expires_at', Float))
+    Column('user_id', String(64), nullable=False), Column('expires_at', Float(53)))
 payments = Table('pp_payments', metadata,
     Column('id', String(36), primary_key=True), Column('owner_id', String(64), index=True),
     Column('idempotency_key', String(64)), Column('request_hash', String(64)),
@@ -20,17 +20,17 @@ payments = Table('pp_payments', metadata,
     Column('description', String(240)), Column('recipient_email', String(254)),
     Column('status', String(24)), Column('mode', String(16)),
     Column('approve_link', Text), Column('receipt_text', Text),
-    Column('due_at', Float), Column('created_at', Float), Column('updated_at', Float),
+    Column('due_at', Float(53)), Column('created_at', Float(53)), Column('updated_at', Float(53)),
     UniqueConstraint('owner_id', 'idempotency_key', name='pp_owner_request'))
 events = Table('pp_events', metadata,
     Column('id', String(64), primary_key=True), Column('owner_id', String(64), index=True),
     Column('payment_id', String(36)), Column('kind', String(64)),
-    Column('detail', Text), Column('created_at', Float))
+    Column('detail', Text), Column('created_at', Float(53)))
 outbox = Table('pp_outbox', metadata,
     Column('id', String(64), primary_key=True), Column('owner_id', String(64), index=True),
     Column('payment_id', String(36)), Column('recipient', String(254)),
     Column('subject', String(300)), Column('body', Text), Column('kind', String(24)),
-    Column('status', String(24)), Column('created_at', Float))
+    Column('status', String(24)), Column('created_at', Float(53)))
 settings = Table('pp_settings', metadata,
     Column('owner_id', String(64), primary_key=True),
     Column('receipts', Integer, default=1), Column('reminders', Integer, default=1))
@@ -39,17 +39,17 @@ items = Table('pp_invoice_items', metadata,
     Column('description', String(240), nullable=False), Column('quantity', Integer, nullable=False),
     Column('unit_amount', Numeric(12,2), nullable=False), Column('position', Integer, nullable=False))
 automation_runs = Table('pp_automation_runs', metadata,
-    Column('owner_id', String(64), primary_key=True), Column('started_at', Float),
-    Column('completed_at', Float), Column('queued', Integer), Column('error', String(120)))
+    Column('owner_id', String(64), primary_key=True), Column('started_at', Float(53)),
+    Column('completed_at', Float(53)), Column('queued', Integer), Column('error', String(120)))
 share_links = Table('pp_share_links', metadata,
     Column('token_hash', String(64), primary_key=True),
     Column('payment_id', String(36), nullable=False, index=True),
     Column('owner_id', String(64), nullable=False, index=True),
-    Column('expires_at', Float, nullable=False))
+    Column('expires_at', Float(53), nullable=False))
 payment_reports = Table('pp_payment_reports', metadata,
     Column('payment_id', String(36), primary_key=True), Column('owner_id', String(64), nullable=False,index=True),
     Column('reference', String(120), nullable=False), Column('status', String(24), nullable=False),
-    Column('created_at', Float), Column('reviewed_at', Float))
+    Column('created_at', Float(53)), Column('reviewed_at', Float(53)))
 workspace_preferences = Table('pp_workspace_preferences', metadata,
     Column('owner_id', String(64), primary_key=True), Column('business_name', String(100)),
     Column('payment_instructions', String(2000)))
@@ -80,3 +80,14 @@ def init_db():
         raise RuntimeError('Only MySQL and local SQLite are supported')
     engine = create_engine(url, **kwargs)
     metadata.create_all(engine)
+    # Epoch timestamps require double precision; legacy FLOAT rounded expiry.
+    if engine.dialect.name == 'mysql':
+        inspector = inspect(engine)
+        with engine.begin() as conn:
+            for table in metadata.sorted_tables:
+                expected = {c.name for c in table.columns if isinstance(c.type, Float)}
+                legacy = [c for c in inspector.get_columns(table.name)
+                          if c['name'] in expected and c['type'].__class__.__name__ == 'FLOAT']
+                if legacy:
+                    columns = ', '.join(f"MODIFY COLUMN `{column['name']}` DOUBLE {'NULL' if column['nullable'] else 'NOT NULL'}" for column in legacy)
+                    conn.execute(text(f'ALTER TABLE `{table.name}` {columns}'))
