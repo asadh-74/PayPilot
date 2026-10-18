@@ -34,6 +34,18 @@ outbox = Table('pp_outbox', metadata,
 settings = Table('pp_settings', metadata,
     Column('owner_id', String(64), primary_key=True),
     Column('receipts', Integer, default=1), Column('reminders', Integer, default=1))
+items = Table('pp_invoice_items', metadata,
+    Column('id', String(36), primary_key=True), Column('payment_id', String(36), nullable=False, index=True),
+    Column('description', String(240), nullable=False), Column('quantity', Integer, nullable=False),
+    Column('unit_amount', Numeric(12,2), nullable=False), Column('position', Integer, nullable=False))
+automation_runs = Table('pp_automation_runs', metadata,
+    Column('owner_id', String(64), primary_key=True), Column('started_at', Float),
+    Column('completed_at', Float), Column('queued', Integer), Column('error', String(120)))
+share_links = Table('pp_share_links', metadata,
+    Column('token_hash', String(64), primary_key=True),
+    Column('payment_id', String(36), nullable=False, index=True),
+    Column('owner_id', String(64), nullable=False, index=True),
+    Column('expires_at', Float, nullable=False))
 engine = None
 
 def init_db():

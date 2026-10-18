@@ -5,6 +5,7 @@ import io
 import json
 import os
 import re
+import secrets
 import time
 import uuid
 from collections import defaultdict, deque
@@ -23,6 +24,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, update, delete, func, text
 from sqlalchemy.exc import IntegrityError
 from . import db, ai_service, security
+from starlette.concurrency import run_in_threadpool
 from .paypal_client import PayPalClient
 
 paypal = PayPalClient()
@@ -35,6 +37,7 @@ async def lifespan(app):
     db.init_db()
     stop = Event()
     worker = None
+    cleanup_demo_workspaces()
     if scheduler_enabled():
         worker = Thread(target=automation_loop, args=(stop,), daemon=True, name='paypilot-automation')
         worker.start()
@@ -46,7 +49,7 @@ async def lifespan(app):
             worker.join(timeout=25)
         db.engine.dispose()
 
-app = FastAPI(title='PayPilot API', version='2.1.0', lifespan=lifespan,
+app = FastAPI(title='PayPilot API', version='2.2.0', lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
 app.mount('/static', StaticFiles(directory=STATIC), name='static')
 
@@ -82,12 +85,18 @@ async def protections(request, call_next):
 class Login(BaseModel):
     password: str = Field(max_length=512)
 
+class InvoiceItem(BaseModel):
+    description: str = Field(min_length=1,max_length=240)
+    quantity: int = Field(ge=1,le=10000,strict=True)
+    unit_amount: Decimal = Field(gt=0,le=9999999,max_digits=12,decimal_places=2)
+
 class PaymentInput(BaseModel):
     amount: Decimal = Field(gt=0, le=9999999, max_digits=12, decimal_places=2)
     currency: str = 'USD'
     description: str = Field(min_length=1, max_length=240)
     recipient_email: str | None = Field(default=None, max_length=254)
     due_days: int = Field(default=7, ge=0, le=365)
+    items: list[InvoiceItem] = Field(default_factory=list,max_length=30)
 
     @field_validator('currency')
     @classmethod
@@ -126,7 +135,7 @@ def payment(conn, pid, owner=None, lock=False):
     return dict(row)
 
 def public(row):
-    return {k: float(v) if isinstance(v, Decimal) else v for k,v in dict(row).items()
+    return {k: format(v, '.2f') if isinstance(v, Decimal) else v for k,v in dict(row).items()
             if k not in ('owner_id','request_hash','idempotency_key')}
 
 def audit(conn, owner, pid, kind, detail, event_id=None):
@@ -185,7 +194,7 @@ def health():
     try:
         with db.engine.connect() as conn:
             conn.execute(text('SELECT 1'))
-        return {'status':'ok','database':db.engine.dialect.name,'version':'2.1.0'}
+        return {'status':'ok','database':db.engine.dialect.name,'version':'2.2.0'}
     except Exception:
         raise HTTPException(503,'Database is not ready')
 
@@ -245,6 +254,8 @@ def parse(body: Prompt,user=Depends(security.current_user)):
 
 @app.post('/api/payments')
 def create_payment(body: PaymentInput,request: Request,user=Depends(security.current_user)):
+    if body.items and sum((i.unit_amount*i.quantity for i in body.items),Decimal('0'))!=body.amount:
+        raise HTTPException(422,'Invoice amount must equal the sum of line items')
     key=request.headers.get('idempotency-key','')
     if not re.fullmatch(r'[a-zA-Z0-9_-]{8,64}',key):
         raise HTTPException(422,'Provide an 8–64 character Idempotency-Key')
@@ -264,17 +275,19 @@ def create_payment(body: PaymentInput,request: Request,user=Depends(security.cur
                 raise HTTPException(409,'Workspace invoice limit reached')
             pid=uid()
             p=dict(id=pid,owner_id=user['id'],idempotency_key=key,request_hash=fingerprint,
-                **body.model_dump(exclude={'due_days'}),status='CREATED' if user['role']=='demo' else 'PENDING',
+                **body.model_dump(exclude={'due_days','items'}),status='CREATED' if user['role']=='demo' else 'PENDING',
                 mode='demo' if user['role']=='demo' else 'sandbox',
                 created_at=now,updated_at=now,due_at=now+body.due_days*86400)
             conn.execute(db.payments.insert().values(**p))
+            for position,item in enumerate(body.items):
+                conn.execute(db.items.insert().values(id=uid(),payment_id=pid,position=position,**item.model_dump()))
             audit(conn,user['id'],pid,'invoice.created','Payment details confirmed by user')
     if p['mode']=='sandbox' and p['status']=='PENDING':
         base=os.getenv('APP_BASE_URL','').rstrip('/')
         if not base.startswith('https://'):
             raise HTTPException(503,'Configure an HTTPS APP_BASE_URL before sandbox checkout')
         try:
-            order=paypal.create_order(p['amount'],p['currency'],p['description'],p['id'],base+'/return',base+'/cancel')
+            order=paypal.create_order(p['amount'],p['currency'],p['description'],p['id'],base+'/return?invoice='+p['id'],base+'/cancel')
             link=paypal.approve_link(order)
             if not link or not link.startswith('https://www.sandbox.paypal.com/'):
                 raise ValueError('Unexpected approval URL')
@@ -372,6 +385,7 @@ def save_rules(body: Rules,user=Depends(security.current_user)):
 @app.post('/api/automations/run')
 def run_rules(user=Depends(security.current_user)):
     queued=0
+    started=time.time()
     day=datetime.now(timezone.utc).date().isoformat()
     with db.engine.begin() as conn:
         rule=conn.execute(select(db.settings).where(db.settings.c.owner_id==user['id']).with_for_update()).mappings().one()
@@ -381,6 +395,8 @@ def run_rules(user=Depends(security.current_user)):
                 queued+=queue_message(conn,p,'receipt',f"receipt-{p['id']}")
             elif p['status']!='CAPTURED' and p['due_at']<time.time() and rule['reminders']:
                 queued+=queue_message(conn,p,'reminder',f"reminder-{p['id']}-{day}")
+        conn.execute(delete(db.automation_runs).where(db.automation_runs.c.owner_id==user['id']))
+        conn.execute(db.automation_runs.insert().values(owner_id=user['id'],started_at=started,completed_at=time.time(),queued=queued))
         if queued:
             audit(conn,user['id'],None,'automation.run',f'{queued} new outbox item(s); daily deduplication applied')
     return {'queued':queued,'delivery':'controlled outbox; no external messages sent'}
@@ -413,7 +429,7 @@ async def webhook(request: Request):
         raise HTTPException(413,'Payload too large')
     try:
         payload=json.loads(raw)
-        if not isinstance(payload,dict) or not paypal.verify_webhook(request.headers,payload):
+        if not isinstance(payload,dict) or not await run_in_threadpool(paypal.verify_webhook, request.headers, payload):
             raise HTTPException(401,'Webhook signature could not be verified')
     except HTTPException:
         raise
@@ -443,8 +459,9 @@ async def webhook(request: Request):
     return {'received':True}
 
 @app.get('/return')
-def payment_return(token: str=''):
-    return RedirectResponse('/?checkout=returned')
+def payment_return(token: str='', invoice: str=''):
+    safe = invoice if re.fullmatch(r'[a-f0-9-]{36}', invoice) else ''
+    return RedirectResponse('/?checkout=returned&invoice='+safe)
 
 @app.get('/cancel')
 def payment_cancel():
@@ -482,6 +499,7 @@ def automation_loop(stop):
     while not stop.wait(scheduler_interval()):
         try:
             automation_tick()
+            cleanup_demo_workspaces()
         except Exception:
             import logging
             logging.getLogger(__name__).warning('Automation database pass failed; will retry next interval')
@@ -493,7 +511,8 @@ def automation_status(user=Depends(security.current_user)):
         last = conn.execute(select(db.events.c.created_at).where(
             db.events.c.owner_id == user['id'], db.events.c.kind == 'automation.run'
         ).order_by(db.events.c.created_at.desc()).limit(1)).scalar()
-    return {'enabled': scheduler_enabled(), 'interval_seconds': scheduler_interval(),
+        run=conn.execute(select(db.automation_runs).where(db.automation_runs.c.owner_id==user['id'])).mappings().first()
+    return {'latest_run':public(run) if run else None,'enabled': scheduler_enabled(), 'interval_seconds': scheduler_interval(),
             'last_action_at': last, 'delivery': 'preview_only',
             'scope': 'Workspaces with an active session. Runs while the server is awake.'}
 
@@ -525,3 +544,111 @@ def collections(user=Depends(security.current_user)):
     return {'currencies': {c: {k: str(v.quantize(Decimal('.01'))) for k, v in g.items()} for c, g in groups.items()},
             'priorities': priorities, 'as_of': now,
             'basis': 'Invoice due dates, not a prediction of collection. Currencies are never combined.'}
+
+
+@app.get('/api/payments/{pid}/details')
+def invoice_details(pid: str, user=Depends(security.current_user)):
+    with db.engine.connect() as conn:
+        p=payment(conn,pid,user['id'])
+        history=conn.execute(select(db.events).where(db.events.c.owner_id==user['id'],
+            db.events.c.payment_id==pid).order_by(db.events.c.created_at)).mappings().all()
+        # Item totals are exact decimal strings throughout the API.
+        line_items=conn.execute(select(db.items).where(db.items.c.payment_id==pid).order_by(db.items.c.position)).mappings().all()
+    return {'invoice':public(p),'events':[public(r) for r in history],'items':[public(i) for i in line_items]}
+
+@app.post('/api/payments/{pid}/retry-checkout')
+def retry_checkout(pid: str, user=Depends(security.current_user)):
+    with db.engine.connect() as conn:
+        p=payment(conn,pid,user['id'])
+    if p['mode']!='sandbox' or p['status']!='PENDING':
+        raise HTTPException(409,'Only incomplete sandbox checkouts can be retried')
+    # Use the persisted request, retaining its fingerprint and original due date.
+    base=os.getenv('APP_BASE_URL','').rstrip('/')
+    if not base.startswith('https://'):
+        raise HTTPException(503,'Configure an HTTPS APP_BASE_URL')
+    try:
+        order=paypal.create_order(p['amount'],p['currency'],p['description'],pid,
+            base+'/return?invoice='+pid,base+'/cancel')
+        link=paypal.approve_link(order)
+        if not link or not link.startswith('https://www.sandbox.paypal.com/'):
+            raise ValueError('Unexpected checkout URL')
+    except Exception:
+        raise HTTPException(502,'Sandbox unavailable. The original invoice is retained; retry later.')
+    with db.engine.begin() as conn:
+        current=payment(conn,pid,user['id'],True)
+        if current['status']=='PENDING':
+            conn.execute(update(db.payments).where(db.payments.c.id==pid).values(
+                paypal_order_id=order['id'],approve_link=link,status='CREATED',updated_at=time.time()))
+            audit(conn,user['id'],pid,'checkout.recovered','Original invoice checkout recovered')
+        return public(payment(conn,pid,user['id']))
+
+@app.post('/api/payments/{pid}/share')
+def share_invoice(pid: str, user=Depends(security.current_user)):
+    token=secrets.token_urlsafe(32)
+    expires=time.time()+24*3600
+    with db.engine.begin() as conn:
+        p=payment(conn,pid,user['id'],True)
+        conn.execute(delete(db.share_links).where(db.share_links.c.payment_id==pid))
+        conn.execute(db.share_links.insert().values(token_hash=security.digest(token),
+            payment_id=pid,owner_id=user['id'],expires_at=expires))
+        audit(conn,user['id'],pid,'invoice.shared','24-hour customer link created; previous link revoked')
+    return {'path':'/invoice/'+token,'expires_at':expires}
+
+@app.delete('/api/payments/{pid}/share')
+def revoke_share(pid: str,user=Depends(security.current_user)):
+    with db.engine.begin() as conn:
+        payment(conn,pid,user['id'])
+        conn.execute(delete(db.share_links).where(db.share_links.c.payment_id==pid))
+        audit(conn,user['id'],pid,'invoice.link_revoked','Customer link revoked')
+    return {'ok':True}
+
+@app.get('/invoice/{token}',response_class=HTMLResponse)
+def customer_invoice(token: str):
+    from html import escape
+    if len(token)>100:
+        raise HTTPException(404,'Invoice link unavailable')
+    with db.engine.connect() as conn:
+        link=conn.execute(select(db.share_links).where(db.share_links.c.token_hash==security.digest(token),
+            db.share_links.c.expires_at>time.time())).mappings().first()
+        if not link:
+            raise HTTPException(404,'Invoice link expired or revoked')
+        p=payment(conn,link['payment_id'],link['owner_id'])
+        line_items=conn.execute(select(db.items).where(db.items.c.payment_id==p['id']).order_by(db.items.c.position)).mappings().all()
+    paid=p['status']=='CAPTURED'
+    checkout=''
+    if not paid and p['mode']=='sandbox' and (p['approve_link'] or '').startswith('https://www.sandbox.paypal.com/'):
+        checkout='<a class="primary" href="'+escape(p['approve_link'],quote=True)+'">Pay with PayPal Sandbox →</a>'
+    elif not paid:
+        checkout='<p>This demo invoice does not accept real payments. The workspace owner can simulate capture.</p>'
+    desc=escape(p['description']); ref=escape(p['id']); amount=f"{p['amount']:.2f} {p['currency']}"
+    due=datetime.fromtimestamp(p['due_at'],timezone.utc).strftime('%d %b %Y')
+    lines='<table><thead><tr><th>DESCRIPTION</th><th>QTY</th><th>UNIT PRICE</th><th>TOTAL</th></tr></thead><tbody>'+''.join(f"<tr><td>{escape(i['description'])}</td><td>{i['quantity']}</td><td>{i['unit_amount']:.2f}</td><td>{i['quantity']*i['unit_amount']:.2f} {p['currency']}</td></tr>" for i in line_items)+'</tbody></table>' if line_items else ''
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PayPilot invoice</title><link rel="stylesheet" href="/static/style.css"></head><body><main class="customer-document"><a class="brand" href="/">◈ PayPilot</a><article class="card"><span class="eyebrow">{'PAYMENT RECEIPT' if paid else 'INVOICE'} · SANDBOX / DEMO</span><h1>{desc}</h1><p>Reference {ref}</p>{lines}<h2>Total {amount}</h2><p>Due {due} UTC</p><p>Status: {'Payment confirmed' if paid else 'Awaiting payment'}</p>{checkout}<hr><p>No real funds move. No external email has been sent. This private link expires in 24 hours and can be revoked by its owner.</p><button class="secondary" id="print-document">Print / Save PDF</button><p class="caption">Use your browser’s Save as PDF destination.</p></article></main><script src="/static/document.js"></script></body></html>"""
+
+@app.post('/api/payments/{pid}/reminder-preview')
+def reminder_preview(pid: str,user=Depends(security.current_user)):
+    with db.engine.connect() as conn:
+        p=payment(conn,pid,user['id'])
+    if p['status']=='CAPTURED':
+        raise HTTPException(409,'Paid invoices do not need a reminder')
+    due=datetime.fromtimestamp(p['due_at'],timezone.utc).strftime('%d %b %Y')
+    return {'subject':'Friendly follow-up: '+p['description'],
+        'body':f"Hello, a friendly reminder about {p['description']} for {p['amount']:.2f} {p['currency']}, due {due}. Please let us know if you need any help. Reference {pid}.",
+        'delivery':'Draft only; not sent','basis':'Invoice amount and due date; deterministic template'}
+
+
+def cleanup_demo_workspaces():
+    """Bound anonymous storage. Never remove administrator records."""
+    cutoff=time.time()-8*3600
+    with db.engine.begin() as conn:
+        stale=conn.execute(select(db.users.c.id).where(db.users.c.role=='demo',
+            db.users.c.created_at<cutoff,~db.users.c.id.in_(select(db.sessions.c.user_id).where(
+                db.sessions.c.expires_at>time.time()))).limit(100)).scalars().all()
+        for owner in stale:
+            ids=select(db.payments.c.id).where(db.payments.c.owner_id==owner)
+            conn.execute(delete(db.items).where(db.items.c.payment_id.in_(ids)))
+            for table in (db.share_links,db.automation_runs,db.outbox,db.events,db.settings,db.payments):
+                conn.execute(delete(table).where(table.c.owner_id==owner))
+            conn.execute(delete(db.sessions).where(db.sessions.c.user_id==owner))
+            conn.execute(delete(db.users).where(db.users.c.id==owner))
+        conn.execute(delete(db.share_links).where(db.share_links.c.expires_at<time.time()))

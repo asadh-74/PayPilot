@@ -115,7 +115,7 @@ def parse_payment_prompt(text: str) -> dict:
             data = json.loads(cleaned)
             if isinstance(data.get("amount"), (int, float)) and data["amount"] > 0:
                 return {
-                    "amount": round(float(data["amount"]), 2),
+                    "amount": str(data["amount"]),
                     "currency": str(data.get("currency", "USD")).upper()[:3],
                     "description": str(data.get("description", "Payment"))[:120],
                     "recipient_email": data.get("recipient_email"),

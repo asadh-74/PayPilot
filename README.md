@@ -102,3 +102,15 @@ See [the demo script](paypilot-ai/paypilot-ai/DEMO_VIDEO_SCRIPT.md) and [submiss
 The Collections view groups receivables into not due, 1–7, 8–30, and 31+ days overdue, with a separate next-seven-days subtotal. Balances remain separated by currency. Follow-up priorities are ordered by due date with explicit reasons; they are not AI risk scores or forecasts of actual receipts.
 
 The background runner defaults to enabled (`AUTOMATION_ENABLED=true`) with `AUTOMATION_INTERVAL_SECONDS=300` (minimum 60). It honors saved receipt/reminder switches, processes workspaces with an unexpired session, and uses the same transactional daily deduplication as manual runs. Graceful shutdown stops the runner. `/api/automations/status` shows configuration and the latest batch that created messages. No external messages are sent, and no paid worker is provisioned. Deploy with one Uvicorn worker as configured; free-host sleep pauses the scheduler. Use the manual button for a predictable live demonstration.
+
+## Version 2.2 — portfolio workflow
+
+- Optional line items with server-validated exact totals.
+- Invoice detail timelines and recovered checkout actions.
+- Expiring, revocable customer invoice links; printable invoices/receipts and browser Save as PDF.
+- Reviewed reminder drafts and completed-run visibility even when no messages are created.
+- Mobile sign-out and expired anonymous-workspace cleanup.
+
+[Portfolio description](portfolio/UPWORK_PROJECT.md) · [90-second recording script](portfolio/DEMO_RECORDING.md) · [Release and setup notes](portfolio/RELEASE_NOTES.md).
+
+The hosted demo's actual database and payment readiness are shown by its configuration and UI; repository support for MySQL does not imply a configured Aiven deployment.

@@ -216,3 +216,76 @@ def test_background_loop_starts_runs_and_stops(client, monkeypatch):
         stop.set()
         worker.join(2)
     assert not worker.is_alive()
+
+
+def test_invoice_items_and_exact_money(client):
+    demo(client)
+    p=create(client,amount='30.30',items=[{'description':'Consulting','quantity':3,'unit_amount':'10.10'}]).json()
+    assert p['amount']=='30.30'
+    details=client.get(f"/api/payments/{p['id']}/details").json()
+    assert details['items'][0]['unit_amount']=='10.10'
+    assert create(client,amount='30.31',items=[{'description':'Work','quantity':3,'unit_amount':'10.10'}]).status_code==422
+
+
+def test_share_link_private_revocable_and_escaped(client):
+    demo(client)
+    p=create(client,description='<script>alert(1)</script>').json()
+    path=client.post(f"/api/payments/{p['id']}/share").json()['path']
+    page=client.get(path)
+    assert page.status_code==200 and '&lt;script&gt;' in page.text
+    assert '<script>alert(1)' not in page.text
+    assert 'buyer@example.com' not in page.text
+    newer=client.post(f"/api/payments/{p['id']}/share").json()['path']
+    assert client.get(path).status_code==404
+    assert client.get(newer).status_code==200
+    client.delete(f"/api/payments/{p['id']}/share")
+    assert client.get(newer).status_code==404
+
+
+def test_details_share_and_reminder_owner_isolation(client):
+    demo(client)
+    pid=create(client).json()['id']
+    assert client.post(f'/api/payments/{pid}/reminder-preview').status_code==200
+    client.post(f'/api/payments/{pid}/simulate')
+    assert client.post(f'/api/payments/{pid}/reminder-preview').status_code==409
+    demo(client)
+    for suffix,method in [('details','get'),('share','post'),('reminder-preview','post'),('retry-checkout','post')]:
+        assert getattr(client,method)(f'/api/payments/{pid}/{suffix}').status_code==404
+
+
+def test_automation_zero_output_still_records_run(client):
+    demo(client)
+    client.post('/api/automations/run')
+    client.post('/api/automations/run')
+    status=client.get('/api/automations/status').json()['latest_run']
+    assert status['queued']==0 and status['completed_at']>=status['started_at']
+
+
+def test_checkout_recovery_preserves_invoice(client,monkeypatch):
+    client.post('/api/auth/login',json={'password':'test-only-password-long-enough'})
+    monkeypatch.setenv('APP_BASE_URL','https://example.com')
+    monkeypatch.setattr(paypal,'create_order',lambda *args: (_ for _ in ()).throw(RuntimeError('offline')))
+    assert create(client).status_code==502
+    p=client.get('/api/payments').json()[0]
+    monkeypatch.setattr(paypal,'create_order',lambda *args:{'id':'RECOVERED','links':[{'rel':'approve','href':'https://www.sandbox.paypal.com/checkoutnow?token=RECOVERED'}]})
+    recovered=client.post(f"/api/payments/{p['id']}/retry-checkout")
+    assert recovered.status_code==200 and recovered.json()['id']==p['id']
+    assert len(client.get('/api/payments').json())==1
+    assert client.post(f"/api/payments/{p['id']}/retry-checkout").status_code==409
+
+
+def test_expired_link_and_demo_cleanup(client):
+    import time
+    from app.main import cleanup_demo_workspaces
+    demo(client)
+    pid=create(client).json()['id']
+    path=client.post(f'/api/payments/{pid}/share').json()['path']
+    with db.engine.begin() as conn:
+        conn.execute(update(db.share_links).values(expires_at=time.time()-1))
+    assert client.get(path).status_code==404
+    with db.engine.begin() as conn:
+        conn.execute(update(db.users).where(db.users.c.role=='demo').values(created_at=time.time()-9*3600))
+        conn.execute(update(db.sessions).values(expires_at=time.time()-1))
+    cleanup_demo_workspaces()
+    with db.engine.connect() as conn:
+        assert conn.scalar(select(func.count()).select_from(db.payments))==0
