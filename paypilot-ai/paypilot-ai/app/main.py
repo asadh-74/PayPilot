@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, update, delete, func, text
 from sqlalchemy.exc import IntegrityError
-from . import db, ai_service, security
+from . import db, ai_service, security, invoice_parser, mail_service
 from starlette.concurrency import run_in_threadpool
 from .paypal_client import PayPalClient
 
@@ -149,7 +149,7 @@ def audit(conn, owner, pid, kind, detail, event_id=None):
 def queue_message(conn, p, kind, key):
     if conn.execute(select(db.outbox.c.id).where(db.outbox.c.id == key)).first():
         return False
-    body = (f"{'DEMO — simulated payment. ' if p['mode']=='demo' else 'Payment recorded by business owner — manual verification. ' if p['mode']=='manual' else 'PAYPAL SANDBOX — test funds only. '}"
+    body = (f"{'DEMO — simulated payment. ' if p['mode']=='demo' else ('Payment recorded by business owner — manual verification. ' if kind=='receipt' else 'Invoice awaiting payment — manual bank transfer. ') if p['mode']=='manual' else 'PAYPAL SANDBOX — test funds only. '}"
             f"{'Payment received' if kind=='receipt' else 'Payment reminder'}: "
             f"{p['amount']:.2f} {p['currency']} for {p['description']}. Reference {p['id']}.")
     conn.execute(db.outbox.insert().values(id=key, owner_id=p['owner_id'], payment_id=p['id'],
@@ -204,7 +204,7 @@ def health():
 
 @app.get('/api/config')
 def config():
-    return {'admin_configured':len(os.getenv('ADMIN_PASSWORD',''))>=16,
+    return {'email_ready':mail_service.ready(),'email_provider':mail_service.provider(),'admin_configured':len(os.getenv('ADMIN_PASSWORD',''))>=16,
             'sandbox_ready':bool(paypal.client_id and paypal.client_secret),
             'demo_enabled':os.getenv('DEMO_ENABLED','false')=='true',
             'database':db.engine.dialect.name,
@@ -679,7 +679,7 @@ def cleanup_demo_workspaces():
         for owner in stale:
             ids=select(db.payments.c.id).where(db.payments.c.owner_id==owner)
             conn.execute(delete(db.items).where(db.items.c.payment_id.in_(ids)))
-            for table in (db.invoice_metadata,db.payment_reports,db.share_links,db.automation_runs,db.outbox,db.events,db.settings,db.payments):
+            for table in (db.email_deliveries,db.invoice_metadata,db.payment_reports,db.share_links,db.automation_runs,db.outbox,db.events,db.settings,db.payments):
                 conn.execute(delete(table).where(table.c.owner_id==owner))
             conn.execute(delete(db.sessions).where(db.sessions.c.user_id==owner))
             conn.execute(delete(db.users).where(db.users.c.id==owner))
@@ -798,13 +798,125 @@ def workspace_snapshot(user=Depends(security.current_user)):
         line_items=conn.execute(select(db.items).join(db.payments,db.items.c.payment_id==db.payments.c.id).where(db.payments.c.owner_id==user['id']).order_by(db.items.c.position)).mappings().all()
         reports=conn.execute(select(db.payment_reports).where(db.payment_reports.c.owner_id==user['id'])).mappings().all()
         messages=conn.execute(select(db.outbox).where(db.outbox.c.owner_id==user['id']).order_by(db.outbox.c.created_at.desc()).limit(100)).mappings().all()
+        deliveries=conn.execute(select(db.email_deliveries).where(db.email_deliveries.c.owner_id==user['id'])).mappings().all()
         activity=conn.execute(select(db.events).where(db.events.c.owner_id==user['id']).order_by(db.events.c.created_at.desc()).limit(100)).mappings().all()
         rule=conn.execute(select(db.settings).where(db.settings.c.owner_id==user['id'])).mappings().one()
         prefs=conn.execute(select(db.workspace_preferences).where(db.workspace_preferences.c.owner_id==user['id'])).mappings().first()
         run=conn.execute(select(db.automation_runs).where(db.automation_runs.c.owner_id==user['id'])).mappings().first()
     return {'invoices':[public(r) for r in invoices], 'metadata':[public(r) for r in metadata],
         'items':[public(r) for r in line_items], 'reports':[public(r) for r in reports],
-        'drafts':[public(r) for r in messages], 'activity':[public(r) for r in activity],
+        'drafts':[public(r) for r in messages], 'deliveries':[public(r) for r in deliveries], 'email_ready':mail_service.ready(),'email_provider':mail_service.provider(), 'activity':[public(r) for r in activity],
         'rules':{'receipts':bool(rule['receipts']),'reminders':bool(rule['reminders'])},
         'business':public(prefs) if prefs else {'business_name':'My business','payment_instructions':''},
         'latest_run':public(run) if run else None, 'database':db.engine.dialect.name}
+
+
+@app.post('/api/invoice-drafts/parse')
+def sentence_invoice(body: Prompt,user=Depends(security.current_user)):
+    admin_only(user)
+    try:
+        parsed=invoice_parser.parse(body.prompt,datetime.now(timezone.utc).date())
+        validated=PaymentInput(**parsed)
+        return {**validated.model_dump(mode='json'),'provider':parsed['provider'],'warnings':parsed['warnings']}
+    except (ValueError,TypeError):
+        raise HTTPException(422,'Use: Invoice Cedar Studio at billing@customer.example for 2 logo designs at PKR 5000 each, due in 14 days. Use one currency and semicolons between line items.')
+
+@app.post('/api/payments/{pid}/email-draft')
+def invoice_email_draft(pid: str,user=Depends(security.current_user)):
+    admin_only(user)
+    base=os.getenv('APP_BASE_URL','').rstrip('/')
+    if not base.startswith('https://'):
+        raise HTTPException(503,'Configure an HTTPS APP_BASE_URL before preparing customer email links')
+    with db.engine.begin() as conn:
+        conn.execute(select(db.users).where(db.users.c.id==user['id']).with_for_update()).first()
+        p=payment(conn,pid,user['id'],True)
+        if not p['recipient_email']:
+            raise HTTPException(422,'This invoice needs a customer email address')
+        key='invoice-email-'+pid
+        previous=conn.execute(select(db.outbox).where(db.outbox.c.id==key)).mappings().first()
+        if previous:
+            delivery=conn.execute(select(db.email_deliveries).where(db.email_deliveries.c.outbox_id==key)).mappings().first()
+            if previous['status']=='SENT' or (delivery and delivery['status'] in ('SENDING','UNKNOWN','ACCEPTED')):
+                return public(previous)
+            conn.execute(delete(db.outbox).where(db.outbox.c.id==key))
+        token=secrets.token_urlsafe(32)
+        conn.execute(delete(db.share_links).where(db.share_links.c.payment_id==pid))
+        conn.execute(db.share_links.insert().values(token_hash=security.digest(token),payment_id=pid,owner_id=user['id'],expires_at=time.time()+24*3600))
+        prefs=conn.execute(select(db.workspace_preferences).where(db.workspace_preferences.c.owner_id==user['id'])).mappings().first()
+        business=(prefs or {}).get('business_name') or 'Your service provider'
+        body=f"Hello,\n\n{business} has prepared an invoice for {p['description']}.\nAmount: {p['amount']:.2f} {p['currency']}\nDue: {datetime.fromtimestamp(p['due_at'],timezone.utc).date()} UTC\n\nOpen your private invoice: {base}/invoice/{token}\nThis link expires in 24 hours.\n\nTransfer through your own bank using the invoice instructions, then submit your reference. Submission does not mark the invoice paid; the business owner verifies the bank statement independently.\n\n{business}"
+        conn.execute(db.outbox.insert().values(id=key,owner_id=user['id'],payment_id=pid,recipient=p['recipient_email'],kind='invoice',subject='Invoice from '+business,body=body,status='DRAFT',created_at=time.time()))
+        audit(conn,user['id'],pid,'email.drafted','Invoice email prepared for review; not sent. Earlier customer links revoked.')
+        return public(conn.execute(select(db.outbox).where(db.outbox.c.id==key)).mappings().one())
+
+class SendMessage(BaseModel):
+    reviewed: bool
+
+@app.post('/api/outbox/{message_id}/send')
+def send_message(message_id: str,body: SendMessage,user=Depends(security.current_user)):
+    admin_only(user)
+    if not body.reviewed: raise HTTPException(422,'Review the recipient and message before sending')
+    if not mail_service.ready(): raise HTTPException(503,'Email is not configured. On Render Free, configure EMAIL_PROVIDER=resend, RESEND_API_KEY and EMAIL_FROM privately on the server.')
+    with db.engine.begin() as conn:
+        conn.execute(select(db.users).where(db.users.c.id==user['id']).with_for_update()).first()
+        message=conn.execute(select(db.outbox).where(db.outbox.c.id==message_id,db.outbox.c.owner_id==user['id'])).mappings().first()
+        if not message: raise HTTPException(404,'Message unavailable')
+        p=payment(conn,message['payment_id'],user['id'])
+        if p['mode']!='manual': raise HTTPException(409,'Only business messages may be sent')
+        address=message['recipient'] or ''
+        if not re.fullmatch(r'[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+',address) or address.lower().endswith(('.example','.invalid','@example.com')):
+            raise HTTPException(422,'Use a real customer address for delivery; illustrative addresses cannot receive email')
+        previous=conn.execute(select(db.email_deliveries).where(db.email_deliveries.c.outbox_id==message_id)).mappings().first()
+        if previous and previous['status']=='ACCEPTED': return {'status':'ACCEPTED','message':'Already accepted by mail server. No duplicate sent.'}
+        if previous and previous['status'] in ('SENDING','UNKNOWN'):
+            raise HTTPException(409,'Delivery is pending or uncertain. Check the mail provider before retrying; duplicate sends are blocked.')
+        if message['kind']=='receipt' and p['status']!='CAPTURED':
+            raise HTTPException(409,'Receipt emails require an administrator-confirmed payment')
+        if message['kind']=='reminder':
+            waiting=conn.execute(select(db.payment_reports.c.payment_id).where(db.payment_reports.c.payment_id==p['id'],db.payment_reports.c.status=='SUBMITTED')).first()
+            if p['status']=='CAPTURED' or waiting or p['due_at']>=time.time():
+                raise HTTPException(409,'This reminder is no longer eligible: paid, not overdue, or awaiting reference review')
+        # Expired or revoked links must never be sent from an old invoice draft.
+        if message['kind']=='invoice':
+            match=re.search(r'/invoice/([A-Za-z0-9_-]+)',message['body'])
+            valid=match and conn.execute(select(db.share_links.c.payment_id).where(db.share_links.c.token_hash==security.digest(match.group(1)),db.share_links.c.expires_at>time.time())).first()
+            if not valid: raise HTTPException(409,'This invoice draft link expired or was replaced. Generate a new customer link and prepare a fresh email.')
+        conn.execute(delete(db.email_deliveries).where(db.email_deliveries.c.outbox_id==message_id))
+        conn.execute(db.email_deliveries.insert().values(outbox_id=message_id,owner_id=user['id'],status='SENDING',attempted_at=time.time()))
+    try:
+        mail_service.send(message['recipient'],message['subject'],message['body'],message_id)
+    except mail_service.DeliveryRejected:
+        with db.engine.begin() as conn:
+            conn.execute(update(db.email_deliveries).where(db.email_deliveries.c.outbox_id==message_id).values(status='FAILED',error='Provider rejected the request. Check credentials, sender verification and recipient restrictions.'))
+            audit(conn,user['id'],message['payment_id'],'email.rejected','Provider rejected message; it remains a draft.')
+        raise HTTPException(502,'Email provider rejected the request. Check credentials, verified sender and recipient restrictions; the draft may be retried after correction.')
+    except Exception:
+        # SMTP can disconnect after accepting DATA. Never automatically retry an
+        # uncertain send or claim delivery. An operator must check the provider.
+        with db.engine.begin() as conn:
+            conn.execute(update(db.email_deliveries).where(db.email_deliveries.c.outbox_id==message_id).values(status='UNKNOWN',error='Provider did not confirm acceptance. Check provider logs before retrying.'))
+            audit(conn,user['id'],message['payment_id'],'email.uncertain','Mail acceptance not confirmed; duplicate retry blocked.')
+        raise HTTPException(502,'Mail acceptance could not be confirmed. Check your provider; automatic retry is blocked to prevent duplicates.')
+    with db.engine.begin() as conn:
+        conn.execute(update(db.email_deliveries).where(db.email_deliveries.c.outbox_id==message_id).values(status='ACCEPTED',accepted_at=time.time(),error=None))
+        conn.execute(update(db.outbox).where(db.outbox.c.id==message_id).values(status='SENT'))
+        audit(conn,user['id'],message['payment_id'],'email.accepted','Message accepted by mail server. Inbox delivery is not independently confirmed.')
+    return {'status':'ACCEPTED','message':'Accepted by mail server; inbox delivery is not independently confirmed.'}
+
+
+class RetryCheck(BaseModel):
+    confirmed_not_sent: bool
+
+@app.post('/api/outbox/{message_id}/retry-check')
+def resolve_email_retry(message_id: str,body: RetryCheck,user=Depends(security.current_user)):
+    admin_only(user)
+    if not body.confirmed_not_sent: raise HTTPException(422,'Check provider records and confirm that no email was accepted before allowing a retry')
+    with db.engine.begin() as conn:
+        conn.execute(select(db.users).where(db.users.c.id==user['id']).with_for_update()).first()
+        delivery=conn.execute(select(db.email_deliveries).where(db.email_deliveries.c.outbox_id==message_id,db.email_deliveries.c.owner_id==user['id'])).mappings().first()
+        if not delivery: raise HTTPException(404,'Delivery record unavailable')
+        if delivery['status']!='UNKNOWN' and not (delivery['status']=='SENDING' and delivery['attempted_at']<time.time()-300):
+            raise HTTPException(409,'Only uncertain or stale sending records can be reset after a provider check')
+        conn.execute(update(db.email_deliveries).where(db.email_deliveries.c.outbox_id==message_id).values(status='FAILED',error='Administrator checked provider records and confirmed no acceptance.'))
+        audit(conn,user['id'],None,'email.retry_allowed','Administrator confirmed no acceptance at the provider. A new explicit send is required.')
+    return {'status':'FAILED','message':'Retry enabled. Review the draft again before sending.'}

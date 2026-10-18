@@ -59,6 +59,12 @@ invoice_metadata = Table('pp_invoice_metadata', metadata,
     Column('customer_name', String(120), nullable=False),
     Column('notes', String(2000), nullable=False, default=''),
     Column('issued_date', String(10), nullable=False))
+email_deliveries = Table('pp_email_deliveries', metadata,
+    Column('outbox_id', String(64), primary_key=True),
+    Column('owner_id', String(64), nullable=False, index=True),
+    Column('status', String(24), nullable=False),
+    Column('attempted_at', Float(53)), Column('accepted_at', Float(53)),
+    Column('error', String(240)))
 engine = None
 
 def init_db():

@@ -454,3 +454,148 @@ def test_login_explains_invalid_server_password_without_exposing_it(client,monke
     response=client.post('/api/auth/login',json={'password':'wrong-test'})
     assert response.status_code==401
     assert 'does not match' in response.json()['detail']
+
+
+def test_sentence_invoice_parse_is_preview_only(client):
+    client.post('/api/auth/login',json={'password':'test-only-password-long-enough'})
+    r=client.post('/api/invoice-drafts/parse',json={'prompt':'Invoice Cedar Studio at billing@customer.example for 2 logo designs at PKR 5000 each; 3 banners at PKR 1000 each, due in 14 days.'})
+    assert r.status_code==200
+    d=r.json()
+    assert d['customer_name']=='Cedar Studio' and d['recipient_email']=='billing@customer.example'
+    assert d['amount']=='13000' and len(d['items'])==2
+    assert d['items'][0]['quantity']==2 and d['items'][1]['unit_amount']=='1000'
+    assert client.get('/api/payments').json()==[]
+    assert client.get('/api/outbox').json()==[]
+    for prompt in ['Invoice Cedar for logo PKR 12,34', 'Invoice Cedar for logo PKR 50 and USD 20', 'Invoice Cedar for logo PKR 10.999', 'Invoice Cedar for logo PKR -50', 'Invoice Cedar for -2 logos at PKR 50 each', 'Invoice Cedar for logo PKR 50 with tax 10%', 'Invoice Cedar for logo PKR 50 due Friday']:
+        assert client.post('/api/invoice-drafts/parse',json={'prompt':prompt}).status_code==422
+    demo(client)
+    assert client.post('/api/invoice-drafts/parse',json={'prompt':'Invoice Cedar for logo PKR 50'}).status_code==403
+
+
+def test_email_preparation_review_delivery_and_dedup(client,monkeypatch):
+    from app import mail_service
+    monkeypatch.setenv('PAYMENT_MODE','manual')
+    monkeypatch.setenv('APP_BASE_URL','https://invoice.example')
+    monkeypatch.setattr(mail_service,'ready',lambda:True)
+    calls=[]
+    monkeypatch.setattr(mail_service,'send',lambda *args:calls.append(args))
+    client.post('/api/auth/login',json={'password':'test-only-password-long-enough'})
+    p=create(client,recipient_email='recipient@test.invalid').json()
+    path=f"/api/payments/{p['id']}/email-draft"
+    d=client.post(path).json()
+    assert d['status']=='DRAFT' and '/invoice/' in d['body'] and not calls
+    send=f"/api/outbox/{d['id']}/send"
+    assert client.post(send,json={'reviewed':False}).status_code==422
+    assert client.post(send,json={'reviewed':True}).status_code==422
+    # Controlled test recipient only; transport is mocked, never external.
+    with db.engine.begin() as conn:
+        conn.execute(update(db.outbox).where(db.outbox.c.id==d['id']).values(recipient='recipient@unit-test.test'))
+    assert client.post(send,json={'reviewed':True}).json()['status']=='ACCEPTED'
+    assert len(calls)==1
+    assert client.post(send,json={'reviewed':True}).json()['status']=='ACCEPTED'
+    assert len(calls)==1
+    s=client.get('/api/workspace/snapshot').json()
+    assert s['deliveries'][0]['status']=='ACCEPTED'
+    assert next(m for m in s['drafts'] if m['id']==d['id'])['status']=='SENT'
+    assert s['invoices'][0]['status']!='CAPTURED'
+    client.post('/api/auth/logout')
+    assert client.post(send,json={'reviewed':True}).status_code==401
+
+
+def test_email_not_configured_and_uncertain_delivery(client,monkeypatch):
+    from app import mail_service
+    monkeypatch.setenv('PAYMENT_MODE','manual')
+    monkeypatch.setenv('APP_BASE_URL','https://invoice.example')
+    client.post('/api/auth/login',json={'password':'test-only-password-long-enough'})
+    p=create(client,recipient_email='recipient@unit-test.test').json()
+    d=client.post(f"/api/payments/{p['id']}/email-draft").json()
+    path=f"/api/outbox/{d['id']}/send"
+    monkeypatch.setattr(mail_service,'ready',lambda:False)
+    assert client.post(path,json={'reviewed':True}).status_code==503
+    assert client.get('/api/workspace/snapshot').json()['deliveries']==[]
+    monkeypatch.setattr(mail_service,'ready',lambda:True)
+    def uncertain(*args): raise TimeoutError('private-provider-token must not leak')
+    monkeypatch.setattr(mail_service,'send',uncertain)
+    r=client.post(path,json={'reviewed':True})
+    assert r.status_code==502 and 'private-provider-token' not in r.text
+    assert client.post(path,json={'reviewed':True}).status_code==409
+    s=client.get('/api/workspace/snapshot').json()
+    assert s['deliveries'][0]['status']=='UNKNOWN' and s['drafts'][0]['status']=='DRAFT'
+
+
+def test_expired_email_link_cannot_be_sent(client,monkeypatch):
+    import time
+    from app import mail_service
+    monkeypatch.setenv('PAYMENT_MODE','manual')
+    monkeypatch.setenv('APP_BASE_URL','https://invoice.example')
+    monkeypatch.setattr(mail_service,'ready',lambda:True)
+    monkeypatch.setattr(mail_service,'send',lambda *args:pytest.fail('Expired link must not be emailed'))
+    client.post('/api/auth/login',json={'password':'test-only-password-long-enough'})
+    p=create(client,recipient_email='recipient@unit-test.test').json()
+    d=client.post(f"/api/payments/{p['id']}/email-draft").json()
+    with db.engine.begin() as conn: conn.execute(update(db.share_links).values(expires_at=time.time()-300))
+    assert client.post(f"/api/outbox/{d['id']}/send",json={'reviewed':True}).status_code==409
+    refreshed=client.post(f"/api/payments/{p['id']}/email-draft").json()
+    assert refreshed['body']!=d['body']
+
+
+def test_https_mail_transport_and_rejection(monkeypatch):
+    from app import mail_service
+    monkeypatch.setenv('EMAIL_PROVIDER','resend')
+    monkeypatch.setenv('EMAIL_FROM','PayPilot <billing@sender.test>')
+    monkeypatch.setenv('RESEND_API_KEY','private-test-key')
+    calls=[]
+    class Response:
+        status_code=200
+        def raise_for_status(self): pass
+        def json(self): return {'id':'test-provider-id'}
+    response=Response()
+    def post(*args,**kwargs): calls.append((args,kwargs)); return response
+    monkeypatch.setattr(mail_service.requests,'post',post)
+    assert mail_service.ready()
+    for _ in range(2): mail_service.send('customer@unit.test','Invoice','Review invoice','draft-1')
+    assert calls[0][0][0]=='https://api.resend.com/emails'
+    assert calls[0][1]['json']['text']=='Review invoice'
+    assert calls[0][1]['headers']['Idempotency-Key']==calls[1][1]['headers']['Idempotency-Key']
+    response.status_code=422
+    with pytest.raises(mail_service.DeliveryRejected): mail_service.send('customer@unit.test','Invoice','Body','draft-2')
+    before=len(calls)
+    with pytest.raises(ValueError): mail_service.send('customer@unit.test','Injected\nHeader','Body')
+    assert len(calls)==before
+
+
+def test_email_retry_requires_provider_check_and_explicit_send(client,monkeypatch):
+    from app import mail_service
+    monkeypatch.setenv('PAYMENT_MODE','manual')
+    monkeypatch.setenv('APP_BASE_URL','https://invoice.example')
+    monkeypatch.setattr(mail_service,'ready',lambda:True)
+    client.post('/api/auth/login',json={'password':'test-only-password-long-enough'})
+    p=create(client,recipient_email='recipient@unit-test.test').json()
+    d=client.post(f"/api/payments/{p['id']}/email-draft").json()
+    root=f"/api/outbox/{d['id']}"
+    def uncertain(*args): raise TimeoutError()
+    monkeypatch.setattr(mail_service,'send',uncertain)
+    assert client.post(root+'/send',json={'reviewed':True}).status_code==502
+    assert client.post(root+'/retry-check',json={'confirmed_not_sent':False}).status_code==422
+    assert client.post(root+'/retry-check',json={'confirmed_not_sent':True}).status_code==200
+    def rejected(*args): raise mail_service.DeliveryRejected()
+    monkeypatch.setattr(mail_service,'send',rejected)
+    assert client.post(root+'/send',json={'reviewed':True}).status_code==502
+    assert client.get('/api/workspace/snapshot').json()['deliveries'][0]['status']=='FAILED'
+    calls=[]
+    monkeypatch.setattr(mail_service,'send',lambda *args:calls.append(args))
+    assert client.post(root+'/send',json={'reviewed':True}).status_code==200
+    assert len(calls)==1
+
+
+def test_old_reminder_cannot_be_sent_after_payment(client,monkeypatch):
+    from app import mail_service
+    monkeypatch.setenv('PAYMENT_MODE','manual')
+    monkeypatch.setattr(mail_service,'ready',lambda:True)
+    monkeypatch.setattr(mail_service,'send',lambda *args:pytest.fail('Stale reminder must not send'))
+    client.post('/api/auth/login',json={'password':'test-only-password-long-enough'})
+    p=create(client,recipient_email='recipient@unit-test.test').json()
+    with db.engine.begin() as conn:
+        conn.execute(update(db.payments).where(db.payments.c.id==p['id']).values(status='CAPTURED'))
+        conn.execute(db.outbox.insert().values(id='stale-reminder',owner_id=conn.execute(select(db.payments.c.owner_id).where(db.payments.c.id==p['id'])).scalar_one(),payment_id=p['id'],recipient='recipient@unit-test.test',kind='reminder',subject='Reminder',body='Old reminder',status='DRAFT',created_at=0))
+    assert client.post('/api/outbox/stale-reminder/send',json={'reviewed':True}).status_code==409

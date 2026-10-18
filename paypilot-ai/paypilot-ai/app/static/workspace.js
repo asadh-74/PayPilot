@@ -39,7 +39,7 @@ document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeDialog(); if(
 const TITLES={overview:['Overview','Workspace · This Week'],invoices:['Invoices','Search, filter and manage invoices'],
   create:['New invoice','Create and share a bank-transfer invoice'],review:['Payment review','Verify submitted transfer references'],
   collections:['Collections','Overdue aging and follow-up priorities'],automations:['Automations','Receipt and reminder workflows'],
-  drafts:['Message drafts','Receipts and reminders — no delivery configured'],activity:['Activity','Workspace timeline'],settings:['Settings','Business and bank details']};
+  drafts:['Message drafts','Receipts, invoice emails and reminders — review before sending'],activity:['Activity','Workspace timeline'],settings:['Settings','Business and bank details']};
 let currentView='overview';
 let invSearch='', invFilter='all';
 
@@ -135,7 +135,7 @@ function invoiceTable(rows,withActions=true){
     <td class="${st==='overdue'?'':''}" style="${st==='overdue'?'color:var(--danger);font-weight:600':''}">${fmtDate(i.due)}</td>
     ${withActions?`<td class="row-actions">
       <button class="btn btn-ghost btn-sm" data-act="copylink" data-id="${i.id}">Share</button>
-      <button class="btn btn-soft btn-sm" data-act="details" data-id="${i.id}">Details</button>${i.status==='paid'?`<button class="btn btn-ghost btn-sm" data-act="receipt" data-id="${i.id}">Receipt</button>`:''}
+      <button class="btn btn-soft btn-sm" data-act="details" data-id="${i.id}">Details</button>${i.mode==='manual'?`<button class="btn btn-ghost btn-sm" data-act="invoiceemail" data-id="${i.id}">Email invoice</button>`:''}${i.status==='paid'?`<button class="btn btn-ghost btn-sm" data-act="receipt" data-id="${i.id}">Receipt</button>`:''}
     </td>`:''}
   </tr>`}).join('')}</tbody></table>`;
 }
@@ -161,6 +161,7 @@ V.invoices=function(){
 let draftItems=[{desc:'',qty:1,price:''}];
 V.create=function(){
   return `
+  <section class="card sentence-composer" aria-labelledby="sentenceTitle"><div><span class="composer-kicker">LESS TYPING. MORE DOING.</span><h2 id="sentenceTitle">Write it. Review it. Invoice it.</h2><p class="muted">Describe your invoice in one sentence. We’ll fill the details below for your review.</p></div><label for="sentencePrompt" class="small">Invoice request</label><textarea id="sentencePrompt" maxlength="1000" rows="3" placeholder="Invoice Cedar Studio at billing@customer.example for 2 logo designs at PKR 5000 each, due in 14 days."></textarea><div class="composer-actions"><button id="parseSentence" class="btn btn-primary">Generate invoice details</button><button id="sentenceExample" class="btn btn-ghost">Try an example</button><span class="small muted">Nothing is saved or sent until you confirm.</span></div><p id="sentenceStatus" class="small" role="status"></p></section>
   <div class="grid grid-2-1">
     <div class="card card-pad">
       <div class="form-grid">
@@ -179,7 +180,7 @@ V.create=function(){
       <div class="divider"></div>
       <div class="field"><label for="fNotes">Notes to customer (optional)</label><textarea id="fNotes" rows="2" placeholder="Payment terms, thank-you note…"></textarea></div>
       <div style="display:flex;gap:10px;margin-top:8px">
-        <button class="btn btn-primary" id="saveInvoice">Create invoice</button>
+        <button class="btn btn-primary" id="saveInvoice">Create invoice</button><button class="btn btn-soft" id="createEmailInvoice">Create & prepare email</button>
         <button class="btn btn-ghost" data-view="invoices">Cancel</button>
       </div>
     </div>
@@ -288,7 +289,7 @@ V.collections=function(){
 V.automations=function(){
   const A=DB.automations;
   return `
-  <div class="alert info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:2px"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg><span>Automations only <strong>prepare drafts</strong> and log run history. External delivery is not configured. Drafts stay in your workspace.</span></div>
+  <div class="alert info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:2px"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg><span>Automations only <strong>prepare drafts</strong> and log run history. Email sends only after explicit recipient and content review. Configure the email provider privately on the server.</span></div>
   <div class="grid grid-2-1">
     <div class="card card-pad">
       <h2 class="section-title">Receipts & reminders</h2><button class="btn btn-soft btn-sm" data-command="run">Run draft preparation</button>
@@ -308,7 +309,7 @@ V.automations=function(){
 
 /* ---------- Drafts ---------- */
 V.drafts=function(){
-  const grouped={receipt:[],reminder:[],overdue:[]};
+  const grouped={invoice:[],receipt:[],reminder:[],overdue:[]};
   DB.drafts.forEach(d=>grouped[d.kind].push(d));
   const section=(kind,title,icon)=>`
     <h2 class="section-title" style="margin-top:${kind==='receipt'?0:'26px'}">${title}</h2>
@@ -316,18 +317,18 @@ V.drafts=function(){
     <div class="card card-pad" style="margin-bottom:12px">
       <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start">
         <div style="flex:1;min-width:220px">
-          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><strong>${esc(d.subject)}</strong><span class="badge ${d.status==='sent'?'paid':'draft'}">${d.status==='sent'?'Sent':'Draft'}</span></div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><strong>${esc(d.subject)}</strong><span class="badge ${d.status==='sent'?'paid':'draft'}">${d.status==='sent'?'Mail server accepted':d.delivery==='UNKNOWN'?'Acceptance uncertain':d.delivery==='SENDING'?'Sending':d.delivery==='FAILED'?'Send failed — draft kept':'Draft'}</span></div>
           <div class="muted small" style="margin-top:3px">${inv?inv.number+' · '+esc(custName(inv.customerId))+' · '+fmt(invoiceTotal(inv),inv.currency):''} · created ${fmtDate(d.created)}</div>
           <pre style="white-space:pre-wrap;font-family:inherit;font-size:13px;color:var(--ink-2);background:var(--surface-2);border:1px solid var(--line-soft);border-radius:10px;padding:12px 14px;margin-top:12px">${esc(d.body)}</pre>
         </div>
         <div style="display:flex;gap:8px;flex-direction:row;align-items:flex-start">
-          ${d.status==='draft'?`<button class="btn btn-primary btn-sm" data-act="downloaddraft" data-id="${d.id}">Download draft</button>`:'<span class="small muted" style="padding-top:8px">Delivered</span>'}
+          ${d.status==='draft'?`<button class="btn btn-ghost btn-sm" data-act="downloaddraft" data-id="${d.id}">Download draft</button><button class="btn btn-primary btn-sm" data-act="sendmessage" data-id="${d.id}">Review & send</button>${['UNKNOWN','SENDING'].includes(d.delivery)?`<button class="btn btn-ghost btn-sm" data-act="resetdelivery" data-id="${d.id}">Resolve uncertain send</button>`:''}`:'<span class="small muted" style="padding-top:8px">Acceptance recorded</span>'}
         </div>
       </div>
     </div>`}).join(''):`<div class="card card-pad" style="margin-bottom:12px"><p class="muted small" style="padding:8px 0">No ${title.toLowerCase()} yet — they are prepared automatically when automations run, or from Collections.</p></div>`}`;
   return `
-  <div class="alert info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:2px"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Drafts stay here for review. Download a text copy or send through your own email service. PayPilot does not send messages.</span></div>
-  ${section('receipt','Receipts')}${section('reminder','Reminders')}${section('overdue','Overdue follow-ups')}`;
+  <div class="alert info"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:2px"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Review the recipient and message, then explicitly send. Messages stay drafts until the mail server confirms acceptance. Acceptance does not guarantee inbox delivery.</span></div>
+  ${section('invoice','Invoice emails')}${section('receipt','Receipts')}${section('reminder','Reminders')}${section('overdue','Overdue follow-ups')}`;
 };
 
 /* ---------- Activity ---------- */
@@ -341,7 +342,7 @@ V.activity=function(){
 };
 
 /* ---------- Settings ---------- */
-V.settings=function(){return `<div class="grid grid-2"><div class="card card-pad"><h2 class="section-title">Business identity</h2><div class="field"><label for="sName">Business name</label><input id="sName" maxlength="100" value="${esc(DB.business.name)}"></div><p class="muted small">Shown on the customer invoice and receipt page.</p></div><div class="card card-pad"><h2 class="section-title">Bank-transfer instructions</h2><div class="field"><label for="sInstructions">Account details and instructions</label><textarea id="sInstructions" maxlength="2000" rows="9" placeholder="Bank name, account title, IBAN / account number, transfer reference instructions">${esc(DB.business.instructions)}</textarea></div><p class="muted small">Only share the receiving account details your customers need. PayPilot has no connection to your bank.</p></div></div><button id="saveSettings" class="btn btn-primary" style="margin-top:20px">Save business settings</button>`;};
+V.settings=function(){return `<div class="grid grid-2"><div class="card card-pad"><h2 class="section-title">Business identity</h2><div class="email-readiness"><strong>Email delivery: ${DB.emailReady?'Configured':'Not configured'}</strong><p class="small muted">${DB.emailReady?'An email provider is configured. A send still requires your review; acceptance is shown after the mail server responds.':'For Render Free, configure EMAIL_PROVIDER=resend, RESEND_API_KEY and EMAIL_FROM privately on the server. Standard SMTP ports are blocked on Render Free. No credentials belong in this form.'}</p></div><div class="field"><label for="sName">Business name</label><input id="sName" maxlength="100" value="${esc(DB.business.name)}"></div><p class="muted small">Shown on the customer invoice and receipt page.</p></div><div class="card card-pad"><h2 class="section-title">Bank-transfer instructions</h2><div class="field"><label for="sInstructions">Account details and instructions</label><textarea id="sInstructions" maxlength="2000" rows="9" placeholder="Bank name, account title, IBAN / account number, transfer reference instructions">${esc(DB.business.instructions)}</textarea></div><p class="muted small">Only share the receiving account details your customers need. PayPilot has no connection to your bank.</p></div></div><button id="saveSettings" class="btn btn-primary" style="margin-top:20px">Save business settings</button>`;};
 
 function emptyState(title,msg,path){
   return `<div class="empty"><div class="empty-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="${path}"/></svg></div><h3>${title}</h3><p>${msg}</p></div>`;
@@ -352,7 +353,7 @@ function emptyState(title,msg,path){
 ===================================================================== */
 function render(){
     const c=document.getElementById('viewContainer');
-  c.innerHTML=`<div class="preview-strip"><span><strong>${esc(DB.business.name)}</strong> · Private workspace · ${esc(DB.database||'database')}</span><span>Manual bank transfers · Messages remain unsent drafts</span></div>`+(V[currentView]||V.overview)();
+  c.innerHTML=`<div class="preview-strip"><span><strong>${esc(DB.business.name)}</strong> · Private workspace · ${esc(DB.database||'database')}</span><span>Manual bank transfers · Email requires explicit review</span></div>`+(V[currentView]||V.overview)();
   bindView();
 }
 
@@ -369,12 +370,12 @@ async function action(button,fn){if(button?.disabled)return;if(button)button.dis
 function showAuth(){document.getElementById('authScreen').style.display='flex';document.getElementById('appShell').classList.remove('active');document.getElementById('publicScreen').classList.add('hidden');document.getElementById('authScreen').querySelector('input')?.focus();}
 function applySnapshot(s){
  DB.database=s.database==='mysql'?'MySQL connected':'Local SQLite';document.getElementById('businessLabel').textContent=s.business.business_name;
- DB.business={name:s.business.business_name,instructions:s.business.payment_instructions};
+ DB.emailReady=Boolean(s.email_ready);DB.business={name:s.business.business_name,instructions:s.business.payment_instructions};
  const meta=new Map(s.metadata.map(m=>[m.payment_id,m]));
  DB.customers=s.invoices.map(p=>({id:p.id,name:meta.get(p.id)?.customer_name||p.recipient_email||'Customer',contact:p.recipient_email||''}));
  DB.invoices=s.invoices.map(p=>{const m=meta.get(p.id),items=s.items.filter(i=>i.payment_id===p.id);return {id:p.id,number:'INV-'+p.id.slice(0,8).toUpperCase(),customerId:p.id,currency:p.currency,status:p.status==='CAPTURED'?'paid':'pending',issued:m?.issued_date||iso(p.created_at),due:iso(p.due_at),notes:m?.notes||'',mode:p.mode,description:p.description,amount:p.amount,items:items.length?items.map(i=>({desc:i.description,qty:i.quantity,price:i.unit_amount})):[{desc:p.description,qty:1,price:p.amount}]};});
  DB.reviews=s.reports.map(r=>({id:r.payment_id,invoiceId:r.payment_id,reference:r.reference,submitted:iso(r.created_at),note:'',status:r.status==='SUBMITTED'?'awaiting':r.status==='APPROVED'?'confirmed':'rejected'}));
- DB.drafts=s.drafts.map(d=>({id:d.id,kind:d.kind,invoiceId:d.payment_id,subject:d.subject,body:d.body,status:'draft',created:iso(d.created_at)}));
+ DB.drafts=s.drafts.map(d=>({id:d.id,kind:d.kind,invoiceId:d.payment_id,subject:d.subject,body:d.body,recipient:d.recipient,status:d.status==='SENT'?'sent':'draft',delivery:(s.deliveries||[]).find(x=>x.outbox_id===d.id)?.status,created:iso(d.created_at)}));
  DB.activity=s.activity.map(a=>({at:iso(a.created_at),tone:a.kind.includes('rejected')?'red':a.kind.includes('verified')?'green':'stone',text:a.detail+' · '+a.kind}));
  DB.automations={receiptOnConfirm:{on:s.rules.receipts,label:'Receipt drafts',desc:'Prepare a receipt draft after administrator confirmation.'},overdueNotice:{on:s.rules.reminders,label:'Overdue reminders',desc:'Prepare a daily reminder draft for overdue invoices. References awaiting review pause reminders.'}};
  DB.automationRuns=s.latest_run?[{at:iso(s.latest_run.completed_at),text:s.latest_run.queued+' drafts prepared in latest completed run. No messages sent.'}]:[];
@@ -400,27 +401,29 @@ function bindView(){
  if(currentView==='overview')drawChart();
  if(currentView==='create'){
   renderItems();requestKey=requestKey||uuid();
+  document.getElementById('parseSentence').onclick=e=>action(e.currentTarget,generateSentence);
+  document.getElementById('sentenceExample').onclick=()=>{document.getElementById('sentencePrompt').value='Invoice Cedar Studio at billing@customer.example for 2 logo designs at PKR 5000 each; 3 banners at PKR 1000 each, due in 14 days.';document.getElementById('sentencePrompt').focus();};
   document.getElementById('fCurrency').onchange=renderItems;
   document.getElementById('addItem').onclick=()=>{if(draftItems.length>=30){toast('Maximum 30 line items');return;}draftItems.push({desc:'',qty:1,price:''});renderItems();requestKey=uuid();};
   document.getElementById('itemsBody').oninput=e=>{const t=e.target;if(t.dataset.idx===undefined)return;draftItems[+t.dataset.idx][t.dataset.f]=t.value;requestKey=uuid();updateTotals();};
   document.getElementById('itemsBody').onclick=e=>{const b=e.target.closest('[data-del]');if(b){draftItems.splice(+b.dataset.del,1);renderItems();requestKey=uuid();}};
   ['fCustomer','fEmail','fCurrency','fIssued','fDue','fNotes'].forEach(id=>document.getElementById(id).addEventListener('input',()=>{requestKey=uuid();}));
-  document.getElementById('saveInvoice').onclick=e=>action(e.currentTarget,saveInvoice);
+  document.getElementById('saveInvoice').onclick=e=>action(e.currentTarget,saveInvoice);document.getElementById('createEmailInvoice').onclick=e=>action(e.currentTarget,()=>saveInvoice(true));
  }
  if(currentView==='settings')document.getElementById('saveSettings').onclick=e=>action(e.currentTarget,async()=>{const name=document.getElementById('sName').value.trim();if(!name)throw Error('Enter a business name');await api('/workspace','PUT',{business_name:name,payment_instructions:document.getElementById('sInstructions').value.trim()});await reloadView();toast('Business settings saved');});
  document.querySelectorAll('[data-auto]').forEach(input=>input.onchange=()=>action(null,async()=>{try{await api('/automations','PUT',{receipts:input.dataset.auto==='receiptOnConfirm'?input.checked:DB.automations.receiptOnConfirm.on,reminders:input.dataset.auto==='overdueNotice'?input.checked:DB.automations.overdueNotice.on});await reloadView();toast('Automation setting saved');}catch(e){input.checked=!input.checked;throw e;}}));
 }
 function itemCents(item){if(!/^\d+(\.\d{1,2})?$/.test(String(item.price)))throw Error('Use prices with at most two decimal places');const [whole,fraction='']=String(item.price).split('.');return (Number(whole)*100+Number(fraction.padEnd(2,'0')))*Number(item.qty);}
 function updateTotals(){let cents=0;for(let idx=0;idx<draftItems.length;idx++){const item=draftItems[idx];let n=0;try{n=itemCents(item);}catch(e){}cents+=n;document.getElementById('amt-'+idx).textContent=fmt(n/100,document.getElementById('fCurrency').value);}for(const id of ['sumSub','sumTotal'])document.getElementById(id).textContent=fmt(cents/100,document.getElementById('fCurrency').value);}
-async function saveInvoice(){
+async function saveInvoice(prepareEmail=false){
  if(saving)return;const customer=document.getElementById('fCustomer').value.trim(),email=document.getElementById('fEmail').value.trim();
- if(!customer)throw Error('Enter a customer name');if(email&&!document.getElementById('fEmail').checkValidity())throw Error('Enter a valid customer email');
+ if(!customer)throw Error('Enter a customer name');if(prepareEmail&&!email)throw Error('Enter a customer email to prepare the invoice email');if(email&&!document.getElementById('fEmail').checkValidity())throw Error('Enter a valid customer email');
  if(draftItems.some(i=>!i.desc.trim()||!Number.isInteger(+i.qty)||+i.qty<1||+i.qty>10000||+i.price<=0))throw Error('Complete every item; use whole quantities and positive unit prices');
  const cents=draftItems.reduce((sum,i)=>sum+itemCents(i),0);if(!Number.isSafeInteger(cents)||cents<=0)throw Error('Check invoice total');
  const issued=document.getElementById('fIssued').value,due=document.getElementById('fDue').value;if(!issued||!due||due<issued)throw Error('Choose a due date on or after the issue date');
  saving=true;try{
  const inv=await api('/payments','POST',{amount:(cents/100).toFixed(2),currency:document.getElementById('fCurrency').value,description:draftItems[0].desc.trim(),recipient_email:email||null,customer_name:customer,notes:document.getElementById('fNotes').value.trim(),issue_date:issued,due_date:due,items:draftItems.map(i=>({description:i.desc.trim(),quantity:+i.qty,unit_amount:Number(i.price).toFixed(2)}))},{'Idempotency-Key':requestKey});
- requestKey=null;draftItems=[{desc:'',qty:1,price:''}];await refreshWorkspace();navigate('invoices');toast('Invoice saved to the database');await shareInvoice(inv.id);
+ requestKey=null;draftItems=[{desc:'',qty:1,price:''}];await refreshWorkspace();navigate('invoices');toast('Invoice saved to the database');if(prepareEmail){await api('/payments/'+encodeURIComponent(inv.id)+'/email-draft','POST',{});await refreshWorkspace();navigate('drafts');reviewEmail('invoice-email-'+inv.id);}else await shareInvoice(inv.id);
  }finally{saving=false;}
 }
 async function shareInvoice(id){const result=await api('/payments/'+encodeURIComponent(id)+'/share','POST',{});const url=new URL(result.path,location.origin).href;openDialog('<h2>Customer invoice link</h2><div class="dialog-body"><p>This private link expires in 24 hours. Creating a new link revokes the previous one. Share it directly with your customer.</p><input id="shareLink" aria-label="Customer invoice link" readonly style="width:100%;padding:12px" value="'+esc(url)+'"><p><a class="btn btn-soft" target="_blank" rel="noopener" href="'+esc(result.path)+'">Open customer invoice ↗</a></p></div><div class="dialog-actions"><button class="btn btn-ghost" data-command="close">Close</button><button class="btn btn-ghost" data-command="revoke" data-id="'+esc(id)+'">Revoke link</button><button class="btn btn-primary" data-command="copy">Share</button></div>');}
@@ -435,7 +438,7 @@ function downloadDraft(id){const draft=DB.drafts.find(d=>d.id===id);if(!draft)re
 document.addEventListener('click',e=>{
  const nav=e.target.closest('[data-view]');if(nav&&signedIn){e.preventDefault();visit(nav.dataset.view);return;}
  const command=e.target.closest('[data-command]');if(command){const c=command.dataset.command;if(c==='refresh')action(command,reloadView);if(c==='close')closeDialog();if(c==='run')runAutomations(command);if(c==='retry')action(command,async()=>{await reloadView();});if(c==='logout')action(command,async()=>{await api('/auth/logout','POST',{});signedIn=false;DB.invoices=[];DB.drafts=[];DB.reviews=[];showAuth();});if(c==='copy')action(command,async()=>{const input=document.getElementById('shareLink');try{await navigator.clipboard.writeText(input.value);toast('Customer link copied');}catch(e){input.focus();input.select();toast('Copy the selected link using Ctrl+C');}});if(c==='revoke')action(command,async()=>{await api('/payments/'+encodeURIComponent(command.dataset.id)+'/share','DELETE');closeDialog();toast('Customer link revoked');});return;}
- const a=e.target.closest('[data-act]');if(!a)return;action(a,async()=>{const id=a.dataset.id,act=a.dataset.act;if(act==='copylink'||act==='viewinv')await shareInvoice(id);if(act==='details'){const result=await api('/payments/'+encodeURIComponent(id)+'/details');const inv=DB.invoices.find(i=>i.id===id);openDialog('<h2>'+esc(inv.number)+'</h2><div class="dialog-body"><p>'+esc(custName(inv.customerId))+' · '+esc(fmt(invoiceTotal(inv),inv.currency))+'</p><p>'+esc(inv.notes)+'</p><table><thead><tr><th>Item</th><th>Qty</th><th>Unit price</th></tr></thead><tbody>'+inv.items.map(i=>'<tr><td>'+esc(i.desc)+'</td><td>'+i.qty+'</td><td>'+esc(fmt(i.price,inv.currency))+'</td></tr>').join('')+'</tbody></table><h3>Activity</h3>'+result.events.map(x=>'<p>'+esc(new Date(x.created_at*1000).toLocaleString())+' · '+esc(x.detail)+'</p>').join('')+'</div><div class="dialog-actions"><button class="btn btn-ghost" data-command="close">Close</button></div>');}if(act==='receipt'){const r=await api('/payments/'+encodeURIComponent(id)+'/receipt');openDialog('<h2>Payment receipt</h2><div class="dialog-body"><pre style="white-space:pre-wrap;font:inherit">'+esc(r.receipt)+'</pre><p>No email sent. Open the customer invoice link for a printable receipt.</p></div><div class="dialog-actions"><button class="btn btn-ghost" data-command="close">Close</button><button class="btn btn-primary" data-act="copylink" data-id="'+esc(id)+'">Printable receipt link</button></div>');}if(act==='confirm'||act==='reject')await reviewPayment(id,act==='confirm');if(act==='draftfollow'){const r=await api('/payments/'+encodeURIComponent(id)+'/reminder-preview','POST',{});openDialog('<h2>'+esc(r.subject)+'</h2><div class="dialog-body"><pre style="white-space:pre-wrap;font:inherit">'+esc(r.body)+'</pre><p>Preview only. Run automations to save eligible reminders. No message sent.</p></div><button class="btn btn-primary" data-command="close">Close</button>');}if(act==='downloaddraft')downloadDraft(id);});
+ const a=e.target.closest('[data-act]');if(!a)return;action(a,async()=>{const id=a.dataset.id,act=a.dataset.act;if(act==='copylink'||act==='viewinv')await shareInvoice(id);if(act==='details'){const result=await api('/payments/'+encodeURIComponent(id)+'/details');const inv=DB.invoices.find(i=>i.id===id);openDialog('<h2>'+esc(inv.number)+'</h2><div class="dialog-body"><p>'+esc(custName(inv.customerId))+' · '+esc(fmt(invoiceTotal(inv),inv.currency))+'</p><p>'+esc(inv.notes)+'</p><table><thead><tr><th>Item</th><th>Qty</th><th>Unit price</th></tr></thead><tbody>'+inv.items.map(i=>'<tr><td>'+esc(i.desc)+'</td><td>'+i.qty+'</td><td>'+esc(fmt(i.price,inv.currency))+'</td></tr>').join('')+'</tbody></table><h3>Activity</h3>'+result.events.map(x=>'<p>'+esc(new Date(x.created_at*1000).toLocaleString())+' · '+esc(x.detail)+'</p>').join('')+'</div><div class="dialog-actions"><button class="btn btn-ghost" data-command="close">Close</button></div>');}if(act==='receipt'){const r=await api('/payments/'+encodeURIComponent(id)+'/receipt');openDialog('<h2>Payment receipt</h2><div class="dialog-body"><pre style="white-space:pre-wrap;font:inherit">'+esc(r.receipt)+'</pre><p>No email sent. Open the customer invoice link for a printable receipt.</p></div><div class="dialog-actions"><button class="btn btn-ghost" data-command="close">Close</button><button class="btn btn-primary" data-act="copylink" data-id="'+esc(id)+'">Printable receipt link</button></div>');}if(act==='confirm'||act==='reject')await reviewPayment(id,act==='confirm');if(act==='draftfollow'){const r=await api('/payments/'+encodeURIComponent(id)+'/reminder-preview','POST',{});openDialog('<h2>'+esc(r.subject)+'</h2><div class="dialog-body"><pre style="white-space:pre-wrap;font:inherit">'+esc(r.body)+'</pre><p>Preview only. Run automations to save eligible reminders. No message sent.</p></div><button class="btn btn-primary" data-command="close">Close</button>');}if(act==='invoiceemail'){await api('/payments/'+encodeURIComponent(id)+'/email-draft','POST',{});await refreshWorkspace();navigate('drafts');toast('Invoice email prepared. Review before sending. Previous customer link may have been replaced.');}if(act==='sendmessage')reviewEmail(id);if(act==='resetdelivery')reviewRetry(id);if(act==='downloaddraft')downloadDraft(id);});
 });
 const picker=document.getElementById('pagePicker');picker.innerHTML=Object.entries(TITLES).map(([k,v])=>'<option value="'+k+'">'+v[0]+'</option>').join('');picker.onchange=e=>{if(signedIn)visit(e.target.value);};
 const mobileInner=document.getElementById('mobileNavInner');mobileInner.innerHTML=Array.from(document.querySelectorAll('#sidebar .nav-item')).map(b=>b.outerHTML.replace('id="reviewCount"','data-review-count="true"')).join('');
@@ -478,3 +481,24 @@ function drawChart(){
 }
 
 api('/config').then(config=>{if(!config.admin_configured){const error=document.getElementById('authError');error.textContent='Administrator setup needed: ADMIN_PASSWORD must contain at least 16 characters in Render. Save the variable and deploy before signing in.';error.classList.add('show');}}).catch(()=>{});
+
+
+async function generateSentence(){
+ const status=document.getElementById('sentenceStatus'),prompt=document.getElementById('sentencePrompt').value.trim();
+ if(!prompt)throw Error('Describe a customer, service, price and currency first');
+ status.textContent='Reading your request…';
+ try{const data=await api('/invoice-drafts/parse','POST',{prompt});
+ document.getElementById('fCustomer').value=data.customer_name||'';document.getElementById('fEmail').value=data.recipient_email||'';
+ document.getElementById('fCurrency').value=data.currency;document.getElementById('fIssued').value=data.issue_date;document.getElementById('fDue').value=data.due_date;
+ draftItems=data.items.map(i=>({desc:i.description,qty:i.quantity,price:i.unit_amount}));renderItems();updateTotals();requestKey=uuid();
+ status.textContent=data.provider+' · '+data.warnings.join(' ');document.getElementById('fCustomer').focus();
+ toast('Invoice details generated. Review, then create.');
+ }catch(e){status.textContent=e.message;throw e;}
+}
+function reviewEmail(id){
+ const draft=DB.drafts.find(d=>d.id===id);if(!draft)return;
+ openDialog('<h2>Review email before sending</h2><div class="dialog-body"><p><strong>To:</strong> '+esc(draft.recipient)+'</p><p><strong>Subject:</strong> '+esc(draft.subject)+'</p><pre class="email-body">'+esc(draft.body)+'</pre><p class="small muted">'+(DB.emailReady?'Mail-server acceptance will be recorded. Inbox delivery is not independently verified.':'Email is not configured yet. Configure the server email provider before sending.')+'</p><label class="email-confirm"><input type="checkbox" id="emailReviewed">I checked the recipient and message and want to send this email.</label><p id="actionError" role="alert" style="color:var(--danger)"></p></div><div class="dialog-actions"><button class="btn btn-ghost" data-command="close">Cancel</button><button class="btn btn-primary" id="emailSend">Send email</button></div>');
+ document.getElementById('emailSend').onclick=e=>action(e.currentTarget,async()=>{if(!document.getElementById('emailReviewed').checked)throw Error('Confirm the recipient and message before sending');const result=await api('/outbox/'+encodeURIComponent(id)+'/send','POST',{reviewed:true});closeDialog();await reloadView();toast(result.message);});
+}
+
+function reviewRetry(id){openDialog('<h2>Check the email provider first</h2><div class="dialog-body"><p>A timeout can happen after a provider accepts an email. Check the provider delivery records to avoid sending a duplicate.</p><label class="email-confirm"><input type="checkbox" id="retryChecked">I checked the provider records and confirmed this email was not accepted.</label><p id="actionError" role="alert"></p></div><div class="dialog-actions"><button class="btn btn-ghost" data-command="close">Cancel</button><button class="btn btn-primary" id="retryAllow">Allow a new send</button></div>');document.getElementById('retryAllow').onclick=e=>action(e.currentTarget,async()=>{if(!document.getElementById('retryChecked').checked)throw Error('Confirm your provider-record check first');await api('/outbox/'+encodeURIComponent(id)+'/retry-check','POST',{confirmed_not_sent:true});closeDialog();await reloadView();toast('Retry enabled. Review the draft again before sending.');});}
