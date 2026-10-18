@@ -204,7 +204,8 @@ def health():
 
 @app.get('/api/config')
 def config():
-    return {'sandbox_ready':bool(paypal.client_id and paypal.client_secret),
+    return {'admin_configured':len(os.getenv('ADMIN_PASSWORD',''))>=16,
+            'sandbox_ready':bool(paypal.client_id and paypal.client_secret),
             'demo_enabled':os.getenv('DEMO_ENABLED','false')=='true',
             'database':db.engine.dialect.name,
             'persistence':'ephemeral demo storage' if db.engine.dialect.name=='sqlite' else 'persistent MySQL',
@@ -225,8 +226,10 @@ def demo(response: Response):
 
 @app.post('/api/auth/login')
 def login(body: Login,response: Response):
+    if len(os.getenv('ADMIN_PASSWORD','')) < 16:
+        raise HTTPException(503,'Workspace password is not configured correctly. Set ADMIN_PASSWORD in Render to at least 16 characters, then save and deploy.')
     if not security.valid_admin(body.password):
-        raise HTTPException(401,'Invalid credentials or administrator not configured')
+        raise HTTPException(401,'Password does not match this workspace. Copy the exact ADMIN_PASSWORD value from Render, including any spaces, and ensure its saved configuration has been deployed.')
     with db.engine.begin() as conn:
         if not conn.execute(select(db.users).where(db.users.c.id=='admin')).first():
             conn.execute(db.users.insert().values(id='admin',role='admin',created_at=time.time()))

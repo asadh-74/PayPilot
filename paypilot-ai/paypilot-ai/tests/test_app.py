@@ -439,3 +439,18 @@ def test_customer_reference_cannot_be_reused_across_invoices(client, monkeypatch
     assert report(links[0]).status_code==200
     assert report(links[1]).status_code==409
     assert all(p['status']!='CAPTURED' for p in client.get('/api/payments').json())
+
+
+
+def test_login_explains_invalid_server_password_without_exposing_it(client,monkeypatch):
+    monkeypatch.setenv('ADMIN_PASSWORD','short-test')
+    assert client.get('/api/config').json()['admin_configured'] is False
+    response=client.post('/api/auth/login',json={'password':'short-test'})
+    assert response.status_code==503
+    assert 'at least 16' in response.json()['detail']
+    assert 'short-test' not in response.text
+    monkeypatch.setenv('ADMIN_PASSWORD','test-only-password-long-enough')
+    assert client.get('/api/config').json()['admin_configured'] is True
+    response=client.post('/api/auth/login',json={'password':'wrong-test'})
+    assert response.status_code==401
+    assert 'does not match' in response.json()['detail']

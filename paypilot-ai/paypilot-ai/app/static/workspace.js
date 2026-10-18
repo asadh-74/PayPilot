@@ -476,3 +476,5 @@ function drawChart(){
   });
   function roundRect(c,x,y,w,h,r){ c.beginPath(); c.moveTo(x+r,y); c.arcTo(x+w,y,x+w,y+h,r); c.arcTo(x+w,y+h,x,y+h,r); c.arcTo(x,y+h,x,y,r); c.arcTo(x,y,x+w,y,r); c.closePath(); }
 }
+
+api('/config').then(config=>{if(!config.admin_configured){const error=document.getElementById('authError');error.textContent='Administrator setup needed: ADMIN_PASSWORD must contain at least 16 characters in Render. Save the variable and deploy before signing in.';error.classList.add('show');}}).catch(()=>{});
