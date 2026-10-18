@@ -128,19 +128,21 @@ def parse_payment_prompt(text: str) -> dict:
 def _regex_extract(text: str) -> dict:
     """Conservative offline parser; ambiguous amounts require manual review."""
     email = re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", text)
-    supported = {"USD", "EUR", "GBP", "CAD", "AUD", "SGD"}
+    supported = {"USD", "EUR", "GBP", "CAD", "AUD", "SGD", "PKR"}
     currency_codes = re.findall(r"\b(?:USD|EUR|GBP|CAD|AUD|SGD|JPY|INR|PKR|BRL|MXN)\b", text, re.I)
     codes = {c.upper() for c in currency_codes}
     if len(codes) > 1 or (codes and not codes <= supported):
         raise ValueError("Unsupported or ambiguous currency")
     symbol_currency = "EUR" if "€" in text else "GBP" if "£" in text else "USD"
     curr = next(iter(codes), symbol_currency)
+    if "$" in text and curr not in {"USD","CAD","AUD","SGD"}:
+        raise ValueError("Conflicting currency")
     if ("€" in text and curr != "EUR") or ("£" in text and curr != "GBP"):
         raise ValueError("Conflicting currency")
-    pattern = r"(?:[$€£]\s*|\b(?:USD|EUR|GBP|CAD|AUD|SGD)\s+)(\d+(?:,\d{3})*(?:\.\d{1,2})?)(?![\d.,])"
+    pattern = r"(?:[$€£]\s*|\b(?:USD|EUR|GBP|CAD|AUD|SGD|PKR)\s+)(\d+(?:,\d{3})*(?:\.\d{1,2})?)(?![\d.,])"
     matches = re.findall(pattern, text, re.I)
     if not matches:
-        matches = re.findall(r"\b(\d+(?:,\d{3})*(?:\.\d{1,2})?)\s*(?:dollars?|USD|EUR|GBP|CAD|AUD|SGD)\b", text, re.I)
+        matches = re.findall(r"\b(\d+(?:,\d{3})*(?:\.\d{1,2})?)\s*(?:dollars?|USD|EUR|GBP|CAD|AUD|SGD|PKR)\b", text, re.I)
     if len(matches) != 1:
         raise ValueError("Provide one unambiguous amount")
     from decimal import Decimal

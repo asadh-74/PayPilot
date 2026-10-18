@@ -1,4 +1,4 @@
-"""PayPilot: sandbox payments, isolated demos, and transactional automation."""
+"""PayPilot: private invoice workspaces and traceable payment operations."""
 import csv
 import hashlib
 import io
@@ -10,7 +10,7 @@ import time
 import uuid
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from threading import Lock, Event, Thread
@@ -49,7 +49,7 @@ async def lifespan(app):
             worker.join(timeout=25)
         db.engine.dispose()
 
-app = FastAPI(title='PayPilot API', version='2.2.0', lifespan=lifespan,
+app = FastAPI(title='PayPilot API', version='3.0.0', lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
 app.mount('/static', StaticFiles(directory=STATIC), name='static')
 
@@ -79,7 +79,7 @@ async def protections(request, call_next):
         return JSONResponse({'detail': 'Service unavailable. Please retry shortly.'}, status_code=503)
     response.headers.update({'X-Content-Type-Options':'nosniff', 'Referrer-Policy':'same-origin',
         'X-Frame-Options':'DENY', 'Cache-Control':'no-store',
-        'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"})
+        'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"})
     return response
 
 class Login(BaseModel):
@@ -96,14 +96,18 @@ class PaymentInput(BaseModel):
     description: str = Field(min_length=1, max_length=240)
     recipient_email: str | None = Field(default=None, max_length=254)
     due_days: int = Field(default=7, ge=0, le=365)
+    customer_name: str = Field(default='', max_length=120)
+    notes: str = Field(default='', max_length=2000)
+    issue_date: date | None = None
+    due_date: date | None = None
     items: list[InvoiceItem] = Field(default_factory=list,max_length=30)
 
     @field_validator('currency')
     @classmethod
     def currency_supported(cls, value):
         value = value.upper()
-        if value not in {'USD','EUR','GBP','CAD','AUD','SGD'}:
-            raise ValueError('Choose USD, EUR, GBP, CAD, AUD, or SGD')
+        if value not in {'USD','EUR','GBP','CAD','AUD','SGD','PKR'}:
+            raise ValueError('Choose USD, EUR, GBP, CAD, AUD, SGD, or PKR')
         return value
 
     @field_validator('recipient_email')
@@ -145,13 +149,13 @@ def audit(conn, owner, pid, kind, detail, event_id=None):
 def queue_message(conn, p, kind, key):
     if conn.execute(select(db.outbox.c.id).where(db.outbox.c.id == key)).first():
         return False
-    body = (f"{'DEMO — simulated payment. ' if p['mode']=='demo' else 'PAYPAL SANDBOX — test funds only. '}"
+    body = (f"{'DEMO — simulated payment. ' if p['mode']=='demo' else 'Payment recorded by business owner — manual verification. ' if p['mode']=='manual' else 'PAYPAL SANDBOX — test funds only. '}"
             f"{'Payment received' if kind=='receipt' else 'Payment reminder'}: "
             f"{p['amount']:.2f} {p['currency']} for {p['description']}. Reference {p['id']}.")
     conn.execute(db.outbox.insert().values(id=key, owner_id=p['owner_id'], payment_id=p['id'],
                  recipient=p['recipient_email'] or 'customer@example.com', kind=kind,
                  subject=f"{kind.title()} · {p['description'][:120]}", body=body,
-                 status='DEMO_OUTBOX', created_at=time.time()))
+                 status='DRAFT' if p['mode']=='manual' else 'DEMO_OUTBOX', created_at=time.time()))
     if kind == 'receipt':
         conn.execute(update(db.payments).where(db.payments.c.id == p['id']).values(receipt_text=body))
     audit(conn, p['owner_id'], p['id'], f'automation.{kind}', 'Saved to controlled outbox; no email sent.')
@@ -161,7 +165,7 @@ def capture_local(conn, p):
     if p['status'] == 'CAPTURED':
         return
     conn.execute(update(db.payments).where(db.payments.c.id==p['id']).values(status='CAPTURED', updated_at=time.time()))
-    audit(conn,p['owner_id'],p['id'],'payment.captured',f"{'Simulated' if p['mode']=='demo' else 'Sandbox'} capture confirmed")
+    audit(conn,p['owner_id'],p['id'],'payment.captured',f"{'Simulated' if p['mode']=='demo' else 'Manually verified' if p['mode']=='manual' else 'Sandbox'} capture confirmed")
     rule = conn.execute(select(db.settings).where(db.settings.c.owner_id==p['owner_id'])).mappings().one()
     if rule['receipts']:
         queue_message(conn,p,'receipt',f"receipt-{p['id']}")
@@ -194,21 +198,21 @@ def health():
     try:
         with db.engine.connect() as conn:
             conn.execute(text('SELECT 1'))
-        return {'status':'ok','database':db.engine.dialect.name,'version':'2.2.0'}
+        return {'status':'ok','database':db.engine.dialect.name,'version':'3.0.0'}
     except Exception:
         raise HTTPException(503,'Database is not ready')
 
 @app.get('/api/config')
 def config():
     return {'sandbox_ready':bool(paypal.client_id and paypal.client_secret),
-            'demo_enabled':os.getenv('DEMO_ENABLED','true')=='true',
+            'demo_enabled':os.getenv('DEMO_ENABLED','false')=='true',
             'database':db.engine.dialect.name,
             'persistence':'ephemeral demo storage' if db.engine.dialect.name=='sqlite' else 'persistent MySQL',
-            'ai_provider':ai_service.active_provider()}
+            'payment_mode':os.getenv('PAYMENT_MODE','manual'),'ai_provider':ai_service.active_provider()}
 
 @app.post('/api/auth/demo')
 def demo(response: Response):
-    if os.getenv('DEMO_ENABLED','true')!='true':
+    if os.getenv('DEMO_ENABLED','false')!='true':
         raise HTTPException(403,'Demo is disabled')
     owner='demo-'+uid()
     with db.engine.begin() as conn:
@@ -256,9 +260,16 @@ def parse(body: Prompt,user=Depends(security.current_user)):
 def create_payment(body: PaymentInput,request: Request,user=Depends(security.current_user)):
     if body.items and sum((i.unit_amount*i.quantity for i in body.items),Decimal('0'))!=body.amount:
         raise HTTPException(422,'Invoice amount must equal the sum of line items')
+    if body.due_date and body.due_date < (body.issue_date or datetime.now(timezone.utc).date()):
+        raise HTTPException(422,'Due date must be on or after issue date')
+    if body.issue_date and body.issue_date > datetime.now(timezone.utc).date():
+        raise HTTPException(422,'Issue date cannot be in the future')
     key=request.headers.get('idempotency-key','')
     if not re.fullmatch(r'[a-zA-Z0-9_-]{8,64}',key):
         raise HTTPException(422,'Provide an 8–64 character Idempotency-Key')
+    mode='demo' if user['role']=='demo' else 'sandbox' if os.getenv('PAYMENT_MODE','manual')=='sandbox' else 'manual'
+    if mode=='sandbox' and body.currency=='PKR':
+        raise HTTPException(422,'PKR is available for manual payment tracking only')
     fingerprint=hashlib.sha256(body.model_dump_json().encode()).hexdigest()
     now=time.time()
     with db.engine.begin() as conn:
@@ -275,10 +286,11 @@ def create_payment(body: PaymentInput,request: Request,user=Depends(security.cur
                 raise HTTPException(409,'Workspace invoice limit reached')
             pid=uid()
             p=dict(id=pid,owner_id=user['id'],idempotency_key=key,request_hash=fingerprint,
-                **body.model_dump(exclude={'due_days','items'}),status='CREATED' if user['role']=='demo' else 'PENDING',
-                mode='demo' if user['role']=='demo' else 'sandbox',
-                created_at=now,updated_at=now,due_at=now+body.due_days*86400)
+                **body.model_dump(exclude={'due_days','items','customer_name','notes','issue_date','due_date'}),status='PENDING' if mode=='sandbox' else 'CREATED',
+                mode=mode,
+                created_at=now,updated_at=now,due_at=datetime.combine(body.due_date,datetime.max.time(),tzinfo=timezone.utc).timestamp() if body.due_date else now+body.due_days*86400)
             conn.execute(db.payments.insert().values(**p))
+            conn.execute(db.invoice_metadata.insert().values(payment_id=pid,owner_id=user['id'],customer_name=body.customer_name.strip() or 'Customer',notes=body.notes,issued_date=(body.issue_date or datetime.now(timezone.utc).date()).isoformat()))
             for position,item in enumerate(body.items):
                 conn.execute(db.items.insert().values(id=uid(),payment_id=pid,position=position,**item.model_dump()))
             audit(conn,user['id'],pid,'invoice.created','Payment details confirmed by user')
@@ -394,6 +406,9 @@ def run_rules(user=Depends(security.current_user)):
             if p['status']=='CAPTURED' and rule['receipts']:
                 queued+=queue_message(conn,p,'receipt',f"receipt-{p['id']}")
             elif p['status']!='CAPTURED' and p['due_at']<time.time() and rule['reminders']:
+                waiting=conn.execute(select(db.payment_reports.c.payment_id).where(db.payment_reports.c.payment_id==p['id'],db.payment_reports.c.status=='SUBMITTED')).first()
+                if waiting:
+                    continue
                 queued+=queue_message(conn,p,'reminder',f"reminder-{p['id']}-{day}")
         conn.execute(delete(db.automation_runs).where(db.automation_runs.c.owner_id==user['id']))
         conn.execute(db.automation_runs.insert().values(owner_id=user['id'],started_at=started,completed_at=time.time(),queued=queued))
@@ -484,8 +499,8 @@ def automation_tick():
     """Process only workspaces with an unexpired session; never send externally."""
     with db.engine.connect() as conn:
         owners = conn.execute(select(db.users.c.id, db.users.c.role).where(
-            db.users.c.id.in_(select(db.sessions.c.user_id).where(
-                db.sessions.c.expires_at > time.time())))).mappings().all()
+            ((db.users.c.role=='admin') | db.users.c.id.in_(select(db.sessions.c.user_id).where(
+                db.sessions.c.expires_at > time.time()))))).mappings().all()
     for owner in owners:
         try:
             run_rules(dict(owner))
@@ -514,7 +529,7 @@ def automation_status(user=Depends(security.current_user)):
         run=conn.execute(select(db.automation_runs).where(db.automation_runs.c.owner_id==user['id'])).mappings().first()
     return {'latest_run':public(run) if run else None,'enabled': scheduler_enabled(), 'interval_seconds': scheduler_interval(),
             'last_action_at': last, 'delivery': 'preview_only',
-            'scope': 'Workspaces with an active session. Runs while the server is awake.'}
+            'scope': 'Business workspace runs while the server is awake, even when signed out. Demo workspaces require an active session.'}
 
 
 @app.get('/api/collections')
@@ -554,7 +569,8 @@ def invoice_details(pid: str, user=Depends(security.current_user)):
             db.events.c.payment_id==pid).order_by(db.events.c.created_at)).mappings().all()
         # Item totals are exact decimal strings throughout the API.
         line_items=conn.execute(select(db.items).where(db.items.c.payment_id==pid).order_by(db.items.c.position)).mappings().all()
-    return {'invoice':public(p),'events':[public(r) for r in history],'items':[public(i) for i in line_items]}
+        report=conn.execute(select(db.payment_reports).where(db.payment_reports.c.payment_id==pid)).mappings().first()
+    return {'invoice':public(p),'events':[public(r) for r in history],'items':[public(i) for i in line_items],'report':public(report) if report else None}
 
 @app.post('/api/payments/{pid}/retry-checkout')
 def retry_checkout(pid: str, user=Depends(security.current_user)):
@@ -614,16 +630,29 @@ def customer_invoice(token: str):
             raise HTTPException(404,'Invoice link expired or revoked')
         p=payment(conn,link['payment_id'],link['owner_id'])
         line_items=conn.execute(select(db.items).where(db.items.c.payment_id==p['id']).order_by(db.items.c.position)).mappings().all()
+        prefs=conn.execute(select(db.workspace_preferences).where(db.workspace_preferences.c.owner_id==p['owner_id'])).mappings().first()
+        report=conn.execute(select(db.payment_reports).where(db.payment_reports.c.payment_id==p['id'])).mappings().first()
+        meta=conn.execute(select(db.invoice_metadata).where(db.invoice_metadata.c.payment_id==p['id'])).mappings().first()
     paid=p['status']=='CAPTURED'
     checkout=''
     if not paid and p['mode']=='sandbox' and (p['approve_link'] or '').startswith('https://www.sandbox.paypal.com/'):
         checkout='<a class="primary" href="'+escape(p['approve_link'],quote=True)+'">Pay with PayPal Sandbox →</a>'
+    elif not paid and p['mode']=='manual':
+        instructions=escape((prefs or {}).get('payment_instructions') or 'Contact the business owner for bank transfer instructions.')
+        checkout='<section class="transfer-panel"><h2>Pay by bank transfer</h2><pre>'+instructions+'</pre><p>Transfer outside PayPilot, then submit your reference. Your invoice stays unpaid until the business owner verifies receipt.</p>'
+        checkout+=('<p class="info-line">Your reference has been submitted for review.</p>' if report and report['status']=='SUBMITTED' else '')
+        checkout+='<form id="transfer-report"><label>Transfer reference<input name="reference" minlength="6" maxlength="120" required placeholder="Bank transaction reference"></label><button class="primary">Submit reference for review</button><p id="report-result" role="status"></p></form></section>'
     elif not paid:
         checkout='<p>This demo invoice does not accept real payments. The workspace owner can simulate capture.</p>'
+    customer=escape((meta or {}).get('customer_name') or 'Customer')
+    notes=escape((meta or {}).get('notes') or '')
     desc=escape(p['description']); ref=escape(p['id']); amount=f"{p['amount']:.2f} {p['currency']}"
     due=datetime.fromtimestamp(p['due_at'],timezone.utc).strftime('%d %b %Y')
     lines='<table><thead><tr><th>DESCRIPTION</th><th>QTY</th><th>UNIT PRICE</th><th>TOTAL</th></tr></thead><tbody>'+''.join(f"<tr><td>{escape(i['description'])}</td><td>{i['quantity']}</td><td>{i['unit_amount']:.2f}</td><td>{i['quantity']*i['unit_amount']:.2f} {p['currency']}</td></tr>" for i in line_items)+'</tbody></table>' if line_items else ''
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PayPilot invoice</title><link rel="stylesheet" href="/static/style.css"></head><body><main class="customer-document"><a class="brand" href="/">◈ PayPilot</a><article class="card"><span class="eyebrow">{'PAYMENT RECEIPT' if paid else 'INVOICE'} · SANDBOX / DEMO</span><h1>{desc}</h1><p>Reference {ref}</p>{lines}<h2>Total {amount}</h2><p>Due {due} UTC</p><p>Status: {'Payment confirmed' if paid else 'Awaiting payment'}</p>{checkout}<hr><p>No real funds move. No external email has been sent. This private link expires in 24 hours and can be revoked by its owner.</p><button class="secondary" id="print-document">Print / Save PDF</button><p class="caption">Use your browser’s Save as PDF destination.</p></article></main><script src="/static/document.js"></script></body></html>"""
+    document_mode='MANUAL PAYMENT RECORD' if p['mode']=='manual' else 'SANDBOX / DEMO'
+    disclaimer='PayPilot records invoices and payment confirmations. Bank transfers occur outside this app; payment status is verified manually by the business owner.' if p['mode']=='manual' else 'No real funds move in sandbox or demo mode.'
+    business=escape((prefs or {}).get('business_name') or 'PayPilot')
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PayPilot invoice</title><link rel="stylesheet" href="/static/workspace.css"></head><body><main class="customer-document"><a class="brand" href="/">◈ PayPilot</a><article class="card"><span class="eyebrow">{'PAYMENT RECEIPT' if paid else 'INVOICE'} · {document_mode}</span><p class="eyebrow">{business}</p><h1>{desc}</h1><p>Bill to: {customer}</p><p>Reference {ref}</p><p>{notes}</p>{lines}<h2>Total {amount}</h2><p>Due {due} UTC</p><p>Status: {'Payment confirmed' if paid else 'Awaiting payment'}</p>{checkout}<hr><p>{disclaimer} This private link expires in 24 hours and can be revoked by its owner.</p><button class="secondary" id="print-document">Print / Save PDF</button><p class="caption">Use your browser’s Save as PDF destination.</p></article></main><script src="/static/document.js"></script></body></html>"""
 
 @app.post('/api/payments/{pid}/reminder-preview')
 def reminder_preview(pid: str,user=Depends(security.current_user)):
@@ -647,8 +676,132 @@ def cleanup_demo_workspaces():
         for owner in stale:
             ids=select(db.payments.c.id).where(db.payments.c.owner_id==owner)
             conn.execute(delete(db.items).where(db.items.c.payment_id.in_(ids)))
-            for table in (db.share_links,db.automation_runs,db.outbox,db.events,db.settings,db.payments):
+            for table in (db.invoice_metadata,db.payment_reports,db.share_links,db.automation_runs,db.outbox,db.events,db.settings,db.payments):
                 conn.execute(delete(table).where(table.c.owner_id==owner))
             conn.execute(delete(db.sessions).where(db.sessions.c.user_id==owner))
             conn.execute(delete(db.users).where(db.users.c.id==owner))
         conn.execute(delete(db.share_links).where(db.share_links.c.expires_at<time.time()))
+
+
+class TransferReport(BaseModel):
+    reference: str=Field(min_length=6,max_length=120)
+
+    @field_validator('reference',mode='before')
+    @classmethod
+    def clean_reference(cls,value):
+        return value.strip().upper() if isinstance(value,str) else value
+
+class ConfirmPayment(TransferReport):
+    verified: bool
+
+class WorkspacePreferences(BaseModel):
+    business_name: str=Field(min_length=1,max_length=100)
+    payment_instructions: str=Field(max_length=2000)
+
+def admin_only(user):
+    if user['role']!='admin':
+        raise HTTPException(403,'Administrator access required')
+
+@app.get('/api/workspace')
+def workspace(user=Depends(security.current_user)):
+    admin_only(user)
+    with db.engine.connect() as conn:
+        prefs=conn.execute(select(db.workspace_preferences).where(db.workspace_preferences.c.owner_id==user['id'])).mappings().first()
+    return dict(prefs) if prefs else {'business_name':'My business','payment_instructions':''}
+
+@app.put('/api/workspace')
+def save_workspace(body: WorkspacePreferences,user=Depends(security.current_user)):
+    admin_only(user)
+    with db.engine.begin() as conn:
+        conn.execute(select(db.users).where(db.users.c.id==user['id']).with_for_update()).first()
+        conn.execute(delete(db.workspace_preferences).where(db.workspace_preferences.c.owner_id==user['id']))
+        conn.execute(db.workspace_preferences.insert().values(owner_id=user['id'],**body.model_dump()))
+        audit(conn,user['id'],None,'workspace.updated','Business name and customer payment instructions updated')
+    return {'ok':True}
+
+@app.post('/api/customer/{token}/report')
+def customer_report(token: str,body: TransferReport):
+    if len(token)>100:
+        raise HTTPException(404,'Invoice link unavailable')
+    with db.engine.begin() as conn:
+        link=conn.execute(select(db.share_links).where(db.share_links.c.token_hash==security.digest(token),db.share_links.c.expires_at>time.time())).mappings().first()
+        if not link:
+            raise HTTPException(404,'Invoice link expired or revoked')
+        conn.execute(select(db.users).where(db.users.c.id==link['owner_id']).with_for_update()).first()
+        p=payment(conn,link['payment_id'],link['owner_id'],True)
+        duplicate=conn.execute(select(db.payment_reports.c.payment_id).where(db.payment_reports.c.owner_id==link['owner_id'],db.payment_reports.c.reference==body.reference,db.payment_reports.c.status.in_(['SUBMITTED','APPROVED']),db.payment_reports.c.payment_id!=p['id'])).first()
+        if duplicate:
+            raise HTTPException(409,'This reference is already associated with another invoice')
+        if p['mode']!='manual' or p['status']=='CAPTURED':
+            raise HTTPException(409,'This invoice is not awaiting a manual transfer')
+        previous=conn.execute(select(db.payment_reports).where(db.payment_reports.c.payment_id==p['id'])).mappings().first()
+        if previous and previous['status']=='SUBMITTED':
+            if previous['reference']==body.reference:
+                return {'status':'SUBMITTED','message':'Already submitted. Awaiting business verification.'}
+            raise HTTPException(409,'A reference is already awaiting review')
+        conn.execute(delete(db.payment_reports).where(db.payment_reports.c.payment_id==p['id']))
+        conn.execute(db.payment_reports.insert().values(payment_id=p['id'],owner_id=p['owner_id'],reference=body.reference,status='SUBMITTED',created_at=time.time()))
+        audit(conn,p['owner_id'],p['id'],'transfer.reported','Customer submitted a reference; payment is not yet confirmed')
+    return {'status':'SUBMITTED','message':'Reference saved. The business owner must verify the transfer.'}
+
+@app.get('/api/payment-reports')
+def payment_reports(user=Depends(security.current_user)):
+    admin_only(user)
+    with db.engine.connect() as conn:
+        return [public(r) for r in conn.execute(select(db.payment_reports).where(db.payment_reports.c.owner_id==user['id'],db.payment_reports.c.status=='SUBMITTED').order_by(db.payment_reports.c.created_at.desc())).mappings()]
+
+@app.post('/api/payments/{pid}/confirm-manual')
+def confirm_manual(pid: str,body: ConfirmPayment,user=Depends(security.current_user)):
+    admin_only(user)
+    if not body.verified:
+        raise HTTPException(422,'Verify receipt in your bank statement before recording payment')
+    with db.engine.begin() as conn:
+        conn.execute(select(db.users).where(db.users.c.id==user['id']).with_for_update()).first()
+        p=payment(conn,pid,user['id'],True)
+        if p['mode']!='manual':
+            raise HTTPException(409,'This action applies only to manual-payment invoices')
+        if p['status']=='CAPTURED':
+            return public(p)
+        duplicate=conn.execute(select(db.payment_reports.c.payment_id).where(db.payment_reports.c.owner_id==user['id'],db.payment_reports.c.reference==body.reference,db.payment_reports.c.status=='APPROVED',db.payment_reports.c.payment_id!=pid)).first()
+        if duplicate:
+            raise HTTPException(409,'This transfer reference is already recorded against another invoice')
+        capture_local(conn,p)
+        conn.execute(delete(db.payment_reports).where(db.payment_reports.c.payment_id==pid))
+        conn.execute(db.payment_reports.insert().values(payment_id=pid,owner_id=user['id'],reference=body.reference,status='APPROVED',created_at=time.time(),reviewed_at=time.time()))
+        audit(conn,user['id'],pid,'transfer.verified','Business owner confirmed receipt against an external bank statement')
+        return public(payment(conn,pid,user['id']))
+
+@app.post('/api/payments/{pid}/reject-reference')
+def reject_reference(pid: str,user=Depends(security.current_user)):
+    admin_only(user)
+    with db.engine.begin() as conn:
+        p=payment(conn,pid,user['id'],True)
+        if p['status']=='CAPTURED':
+            raise HTTPException(409,'Paid invoices cannot have references rejected')
+        result=conn.execute(update(db.payment_reports).where(db.payment_reports.c.payment_id==pid,db.payment_reports.c.owner_id==user['id'],db.payment_reports.c.status=='SUBMITTED').values(status='REJECTED',reviewed_at=time.time()))
+        if not result.rowcount:
+            raise HTTPException(409,'No submitted reference is awaiting review')
+        audit(conn,user['id'],pid,'transfer.rejected','Reference rejected; customer may submit a corrected reference')
+    return {'ok':True}
+
+
+@app.get('/api/workspace/snapshot')
+def workspace_snapshot(user=Depends(security.current_user)):
+    """One scoped read for the dashboard; private data never enters localStorage."""
+    admin_only(user)
+    with db.engine.connect() as conn:
+        invoices=conn.execute(select(db.payments).where(db.payments.c.owner_id==user['id']).order_by(db.payments.c.created_at.desc())).mappings().all()
+        metadata=conn.execute(select(db.invoice_metadata).where(db.invoice_metadata.c.owner_id==user['id'])).mappings().all()
+        line_items=conn.execute(select(db.items).join(db.payments,db.items.c.payment_id==db.payments.c.id).where(db.payments.c.owner_id==user['id']).order_by(db.items.c.position)).mappings().all()
+        reports=conn.execute(select(db.payment_reports).where(db.payment_reports.c.owner_id==user['id'])).mappings().all()
+        messages=conn.execute(select(db.outbox).where(db.outbox.c.owner_id==user['id']).order_by(db.outbox.c.created_at.desc()).limit(100)).mappings().all()
+        activity=conn.execute(select(db.events).where(db.events.c.owner_id==user['id']).order_by(db.events.c.created_at.desc()).limit(100)).mappings().all()
+        rule=conn.execute(select(db.settings).where(db.settings.c.owner_id==user['id'])).mappings().one()
+        prefs=conn.execute(select(db.workspace_preferences).where(db.workspace_preferences.c.owner_id==user['id'])).mappings().first()
+        run=conn.execute(select(db.automation_runs).where(db.automation_runs.c.owner_id==user['id'])).mappings().first()
+    return {'invoices':[public(r) for r in invoices], 'metadata':[public(r) for r in metadata],
+        'items':[public(r) for r in line_items], 'reports':[public(r) for r in reports],
+        'drafts':[public(r) for r in messages], 'activity':[public(r) for r in activity],
+        'rules':{'receipts':bool(rule['receipts']),'reminders':bool(rule['reminders'])},
+        'business':public(prefs) if prefs else {'business_name':'My business','payment_instructions':''},
+        'latest_run':public(run) if run else None, 'database':db.engine.dialect.name}

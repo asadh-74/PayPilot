@@ -77,7 +77,7 @@ def test_idempotent_creation(client):
     assert client.post('/api/payments',headers=headers,json={**body,'amount':'26'}).status_code==409
 
 @pytest.mark.parametrize('overrides',[{'amount':'-1'},{'amount':'NaN'},{'amount':'Infinity'},
-    {'amount':'0'},{'amount':'1.999'},{'currency':'PKR'},{'recipient_email':'not-email'},{'description':''}])
+    {'amount':'0'},{'amount':'1.999'},{'recipient_email':'not-email'},{'description':''}])
 def test_invalid_values(client,overrides):
     demo(client)
     assert create(client,**overrides).status_code==422
@@ -262,6 +262,7 @@ def test_automation_zero_output_still_records_run(client):
 
 
 def test_checkout_recovery_preserves_invoice(client,monkeypatch):
+    monkeypatch.setenv('PAYMENT_MODE','sandbox')
     client.post('/api/auth/login',json={'password':'test-only-password-long-enough'})
     monkeypatch.setenv('APP_BASE_URL','https://example.com')
     monkeypatch.setattr(paypal,'create_order',lambda *args: (_ for _ in ()).throw(RuntimeError('offline')))
@@ -289,3 +290,152 @@ def test_expired_link_and_demo_cleanup(client):
     cleanup_demo_workspaces()
     with db.engine.connect() as conn:
         assert conn.scalar(select(func.count()).select_from(db.payments))==0
+
+
+def admin(c):
+    assert c.post('/api/auth/login',json={'password':'test-only-password-long-enough'}).status_code==200
+
+
+def test_manual_business_flow_without_paypal(client,monkeypatch):
+    monkeypatch.setenv('PAYMENT_MODE','manual')
+    admin(client)
+    assert client.put('/api/workspace',json={'business_name':'Asad Studio','payment_instructions':'Contact our accounts team for transfer details.'}).status_code==200
+    p=create(client,amount='2500.00',currency='PKR').json()
+    assert p['mode']=='manual' and p['status']=='CREATED'
+    assert client.post(f"/api/payments/{p['id']}/simulate").status_code==403
+    path=client.post(f"/api/payments/{p['id']}/share").json()['path']
+    page=client.get(path)
+    assert 'Asad Studio' in page.text and 'bank transfer' in page.text
+    assert 'SANDBOX / DEMO' not in page.text
+    token=path.split('/')[-1]
+    endpoint=f'/api/customer/{token}/report'
+    assert client.post(endpoint,json={'reference':'BANK-ABC123'}).status_code==200
+    assert client.post(endpoint,json={'reference':'BANK-ABC123'}).status_code==200
+    assert client.post(endpoint,json={'reference':'BANK-OTHER'}).status_code==409
+    assert client.get('/api/payments').json()[0]['status']=='CREATED'
+    assert len(client.get('/api/payment-reports').json())==1
+    assert client.post(f"/api/payments/{p['id']}/confirm-manual",json={'reference':'BANK-ABC123','verified':False}).status_code==422
+    before=len(client.get('/api/outbox').json())
+    for _ in range(2):
+        assert client.post(f"/api/payments/{p['id']}/confirm-manual",json={'reference':'BANK-ABC123','verified':True}).json()['status']=='CAPTURED'
+    assert len(client.get('/api/outbox').json())==before+1
+    assert client.get('/api/payment-reports').json()==[]
+    receipt=client.get(f"/api/payments/{p['id']}/receipt").json()['receipt']
+    assert 'manual verification' in receipt and 'DEMO' not in receipt
+
+
+def test_manual_permissions_and_rejected_reference(client,monkeypatch):
+    monkeypatch.setenv('PAYMENT_MODE','manual')
+    admin(client)
+    p=create(client).json()
+    path=client.post(f"/api/payments/{p['id']}/share").json()['path']
+    token=path.split('/')[-1]
+    assert client.post(f'/api/customer/{token}/report',json={'reference':'      '}).status_code==422
+    client.post(f'/api/customer/{token}/report',json={'reference':'REFERENCE1'})
+    assert client.post(f"/api/payments/{p['id']}/reject-reference").status_code==200
+    assert client.post(f'/api/customer/{token}/report',json={'reference':'REFERENCE2'}).status_code==200
+    demo(client)
+    assert client.get('/api/workspace').status_code==403
+    assert client.get('/api/payment-reports').status_code==403
+    assert client.post(f"/api/payments/{p['id']}/confirm-manual",json={'reference':'REFERENCE2','verified':True}).status_code==403
+
+
+def test_private_workspace_demo_disabled(client,monkeypatch):
+    monkeypatch.setenv('DEMO_ENABLED','false')
+    assert client.post('/api/auth/demo').status_code==403
+    admin(client)
+    assert client.get('/api/payments').json()==[]
+
+
+def test_manual_review_pauses_reminders(client,monkeypatch):
+    import time
+    monkeypatch.setenv('PAYMENT_MODE','manual')
+    admin(client)
+    p=create(client,due_days=0).json()
+    with db.engine.begin() as conn:
+        conn.execute(update(db.payments).where(db.payments.c.id==p['id']).values(due_at=time.time()-86400))
+    token=client.post(f"/api/payments/{p['id']}/share").json()['path'].split('/')[-1]
+    client.post(f'/api/customer/{token}/report',json={'reference':'BANK-REFERENCE'})
+    assert client.post('/api/automations/run').json()['queued']==0
+    client.post(f"/api/payments/{p['id']}/reject-reference")
+    assert client.post('/api/automations/run').json()['queued']==1
+
+
+def test_manual_reference_cannot_pay_two_invoices(client,monkeypatch):
+    monkeypatch.setenv('PAYMENT_MODE','manual')
+    admin(client)
+    one=create(client).json()['id']
+    two=create(client).json()['id']
+    body={'reference':'BANK-UNIQUE-123','verified':True}
+    assert client.post(f'/api/payments/{one}/confirm-manual',json=body).status_code==200
+    assert client.post(f'/api/payments/{two}/confirm-manual',json=body).status_code==409
+
+
+def test_light_workspace_full_manual_workflow(client, monkeypatch):
+    monkeypatch.setenv('PAYMENT_MODE','manual')
+    assert client.get('/api/workspace/snapshot').status_code == 401
+    client.post('/api/auth/login',json={'password':'test-only-password-long-enough'})
+    assert client.get('/api/workspace/snapshot').json()['invoices'] == []
+    prefs={'business_name':'Fictional Studio','payment_instructions':'TEST ONLY: receiving instructions'}
+    assert client.put('/api/workspace',json=prefs).status_code == 200
+    today=__import__('datetime').datetime.now(__import__('datetime').timezone.utc).date().isoformat()
+    p=create(client, amount='125.50', currency='PKR', customer_name='Fictional Customer', notes='<script>unsafe</script>', issue_date=today,due_date=today,items=[{'description':'Design','quantity':2,'unit_amount':'62.75'}]).json()
+    assert 'id' in p
+    snapshot=client.get('/api/workspace/snapshot').json()
+    assert snapshot['metadata'][0]['customer_name']=='Fictional Customer'
+    assert snapshot['items'][0]['unit_amount']=='62.75'
+    assert snapshot['business']==prefs
+    share=client.post(f"/api/payments/{p['id']}/share").json()['path']
+    document=client.get(share)
+    assert 'Fictional Customer' in document.text and '&lt;script&gt;' in document.text
+    assert '<script>unsafe</script>' not in document.text
+    token=share.rsplit('/',1)[-1]
+    assert client.post(f'/api/customer/{token}/report',json={'reference':'TEST-REF-12345'}).status_code==200
+    assert client.get('/api/workspace/snapshot').json()['invoices'][0]['status']!='CAPTURED'
+    assert client.post(f"/api/payments/{p['id']}/confirm-manual",json={'reference':'TEST-REF-12345','verified':False}).status_code==422
+    assert client.post(f"/api/payments/{p['id']}/reject-reference").status_code==200
+    assert client.post(f'/api/customer/{token}/report',json={'reference':'TEST-REF-54321'}).status_code==200
+    for _ in range(2):
+        assert client.post(f"/api/payments/{p['id']}/confirm-manual",json={'reference':'TEST-REF-54321','verified':True}).status_code==200
+    snapshot=client.get('/api/workspace/snapshot').json()
+    assert snapshot['invoices'][0]['status']=='CAPTURED'
+    assert len(snapshot['drafts'])==1
+    assert snapshot['drafts'][0]['status']=='DRAFT'
+    assert snapshot['reports'][0]['status']=='APPROVED'
+    assert 'PAYMENT RECEIPT' in client.get(share).text
+    client.post('/api/auth/logout')
+    assert client.get('/api/workspace/snapshot').status_code==401
+    client.post('/api/auth/login',json={'password':'test-only-password-long-enough'})
+    assert len(client.get('/api/workspace/snapshot').json()['invoices'])==1
+
+
+def test_snapshot_scope_and_date_validation(client,monkeypatch):
+    monkeypatch.setenv('PAYMENT_MODE','manual')
+    demo(client)
+    assert client.get('/api/workspace/snapshot').status_code==403
+    client.post('/api/auth/login',json={'password':'test-only-password-long-enough'})
+    assert client.get('/api/workspace/snapshot').json()['invoices']==[]
+    assert create(client,issue_date='2026-01-02',due_date='2026-01-01').status_code==422
+    assert create(client,issue_date='2099-01-01',due_date='2099-01-02').status_code==422
+
+
+def test_light_ui_served_without_inline_script(client):
+    page=client.get('/')
+    assert '/static/workspace.js' in page.text
+    assert '/static/workspace.css' in page.text
+    assert 'onclick=' not in page.text
+    assert 'demo-login' not in page.text
+    assert 'script-src \'self\';' in page.headers['content-security-policy']
+    assert client.get('/static/workspace.js').status_code==200
+
+
+def test_customer_reference_cannot_be_reused_across_invoices(client, monkeypatch):
+    monkeypatch.setenv('PAYMENT_MODE','manual')
+    client.post('/api/auth/login',json={'password':'test-only-password-long-enough'})
+    a,b=create(client).json(),create(client).json()
+    links=[client.post(f"/api/payments/{p['id']}/share").json()['path'].rsplit('/',1)[-1] for p in (a,b)]
+    report=lambda token: client.post(f'/api/customer/{token}/report',json={'reference':'DUPLICATE-TEST-001'})
+    assert report(links[0]).status_code==200
+    assert report(links[0]).status_code==200
+    assert report(links[1]).status_code==409
+    assert all(p['status']!='CAPTURED' for p in client.get('/api/payments').json())

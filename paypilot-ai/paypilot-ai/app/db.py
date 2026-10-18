@@ -46,6 +46,19 @@ share_links = Table('pp_share_links', metadata,
     Column('payment_id', String(36), nullable=False, index=True),
     Column('owner_id', String(64), nullable=False, index=True),
     Column('expires_at', Float, nullable=False))
+payment_reports = Table('pp_payment_reports', metadata,
+    Column('payment_id', String(36), primary_key=True), Column('owner_id', String(64), nullable=False,index=True),
+    Column('reference', String(120), nullable=False), Column('status', String(24), nullable=False),
+    Column('created_at', Float), Column('reviewed_at', Float))
+workspace_preferences = Table('pp_workspace_preferences', metadata,
+    Column('owner_id', String(64), primary_key=True), Column('business_name', String(100)),
+    Column('payment_instructions', String(2000)))
+invoice_metadata = Table('pp_invoice_metadata', metadata,
+    Column('payment_id', String(36), primary_key=True),
+    Column('owner_id', String(64), nullable=False, index=True),
+    Column('customer_name', String(120), nullable=False),
+    Column('notes', String(2000), nullable=False, default=''),
+    Column('issued_date', String(10), nullable=False))
 engine = None
 
 def init_db():

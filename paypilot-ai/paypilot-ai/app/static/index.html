@@ -1,20 +1,87 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#101e1a"><title>PayPilot — Your payments, on autopilot</title><link rel="stylesheet" href="/static/style.css"></head>
-<body>
-<div id="welcome" class="welcome"><div class="welcome-art"><a class="brand" href="/">◈ <span>PayPilot<small>PAYMENTS COPILOT</small></span></a><div><span class="eyebrow">LESS ADMIN. MORE MOMENTUM.</span><h1>Your work deserves<br>a smoother payday.</h1><p>Turn a sentence into an invoice. Keep every payment in sight. Let the follow-up take care of itself.</p><div class="sample-card"><span>PAYMENT CAPTURED</span><strong>$1,250.00 <small>USD</small></strong><p>Website development · Northstar Labs</p><div>✓ Receipt created &nbsp; ✓ Activity recorded</div></div></div><small>Built by Asad Hussain · Hackathon edition</small></div><section class="welcome-form"><span class="eyebrow">WELCOME TO YOUR CONTROL ROOM</span><h2>Meet your payment copilot.</h2><p>Explore a private demo workspace with fictional invoices, simulated payments, and working automation.</p><button id="demo-login" class="primary large">Launch interactive demo <span>↗</span></button><p class="caption">No account needed. No real money. Your demo is separate from other visitors.</p><div class="divider">OR OPEN YOUR WORKSPACE</div><form id="login-form"><label for="password">Administrator password</label><input id="password" type="password" autocomplete="current-password" placeholder="Enter your workspace password" required><button class="secondary large">Sign in to sandbox workspace →</button></form><p id="login-error" role="alert"></p><div class="trust">◉ PayPal Sandbox &nbsp; ◉ MySQL ready &nbsp; ◉ Private sessions</div></section></div>
-<div id="workspace" class="hidden shell"><aside class="sidebar"><a class="brand" href="/">◈ <span>PayPilot<small>PAYMENTS COPILOT</small></span></a><div class="workspace-label"><span class="avatar">AH</span><div>Studio workspace<small id="workspace-mode">Demo environment</small></div></div><span class="nav-label">WORKSPACE</span><nav><button data-view="overview" class="active">◫ <span>Overview</span></button><button data-view="invoices">▤ <span>Invoices</span><b id="nav-count">0</b></button><button data-view="collections">◎ <span>Collections</span></button><button data-view="automations">⌘ <span>Automations</span></button><button data-view="outbox">✉ <span>Outbox</span></button><button data-view="activity">◷ <span>Activity log</span></button></nav><div class="sidebar-bottom"><div class="sandbox-note"><span class="live-dot"></span> A safe place to explore<p>Sandbox and simulated payments only. No real funds move.</p></div><button id="logout" class="logout">↪ End session</button><small>PAYPILOT / HACKATHON EDITION</small></div></aside>
-<div class="main-wrap"><header class="topbar"><span id="breadcrumb">Workspace / <b>Overview</b></span><div><button id="mobile-logout" class="secondary">End session</button><span id="db-badge" class="pill">Connecting…</span><span class="avatar small-avatar">AH</span></div></header><main>
-<div class="page-heading"><div><span class="eyebrow" id="page-eyebrow">YOUR BUSINESS, AT A GLANCE</span><h1 id="page-title">A little less chasing.<br>A lot more creating.</h1><p id="page-subtitle">Your payments and follow-ups, all in one place.</p></div><button id="new-invoice" class="primary">＋ Create invoice</button></div>
-<div id="mode-banner" class="mode-banner"></div>
-<section id="view-overview" class="view"><div class="section-top"><span class="eyebrow">PAYMENT SNAPSHOT</span><select id="currency-filter" aria-label="Analytics currency"><option>USD</option></select></div><div class="stats"><article><span>Captured revenue <i>↗</i></span><strong id="stat-captured">—</strong><small>Confirmed captures only</small></article><article><span>Outstanding <i>◷</i></span><strong id="stat-pending">—</strong><small>Awaiting payment</small></article><article><span>Overdue <i>!</i></span><strong id="stat-overdue">—</strong><small id="overdue-caption">Needs a follow-up</small></article><article><span>Capture rate <i>◉</i></span><strong id="stat-conversion">—</strong><small>Across all invoices</small></article></div>
-<div class="overview-grid"><article class="card chart-card"><div class="card-head"><div><h2>Invoice momentum</h2><p>Created in the last 7 days · counts, not value</p></div><span class="pill">7 DAYS</span></div><div id="chart" class="chart" aria-label="Daily invoice counts"></div><div class="chart-legend"><span>● Created</span><span>● Captured from this cohort</span></div></article><article class="copilot-card"><span class="eyebrow">◈ COPILOT BRIEF</span><h2>Your next best move.</h2><div id="insights"></div><button id="review-overdue">Review outstanding invoices ↗</button><small>Deterministic insights from your workspace data</small></article></div>
-<article class="card"><div class="card-head"><div><h2>Recent invoices</h2><p>A clear view of where things stand.</p></div><button id="all-invoices" class="text-button">View all →</button></div><div id="recent-table" class="table-wrap"></div></article></section>
-<section id="view-invoices" class="view hidden"><article class="card"><div class="filters"><input id="search" placeholder="Search description, customer, or reference…" aria-label="Search invoices"><select id="status-filter" aria-label="Invoice status"><option value="all">All statuses</option><option value="CAPTURED">Captured</option><option value="pending">Outstanding</option><option value="overdue">Overdue</option></select><a class="secondary" href="/api/export">↓ Export CSV</a></div><div id="invoice-table" class="table-wrap"></div></article></section>
-<section id="view-collections" class="view hidden"><article class="card"><div class="card-head"><div><h2>Receivables aging</h2><p>Outstanding balances by currency and due date.</p></div><button id="refresh-collections" class="text-button">↻ Refresh</button></div><div id="aging-table" class="table-wrap"></div><p id="collections-basis" class="caption"></p></article><article class="card"><div class="card-head"><div><h2>Follow-up priorities</h2><p>Oldest unpaid invoices first. Clear reasons for every action.</p></div></div><div id="priority-table" class="table-wrap"></div></article></section>
-<section id="view-automations" class="view hidden"><div class="automation-intro"><span class="eyebrow">SMALL RULES. BIG TIME SAVINGS.</span><h2>Let the routine take care of itself.</h2><p>Capture triggers receipts immediately. Overdue reminders run automatically while the server is awake, or on demand. All messages stay in the demo outbox.</p></div><div class="rule-grid"><article class="card rule"><span class="rule-icon">✉</span><label class="switch"><input id="rule-receipts" type="checkbox" checked> Enabled</label><h2>Instant receipts</h2><p>When a payment is captured, create its receipt and record the action automatically.</p><div class="rule-flow">Payment captured <span>→</span> Receipt in outbox</div><small>Runs on capture · one receipt per invoice</small></article><article class="card rule"><span class="rule-icon">◷</span><label class="switch"><input id="rule-reminders" type="checkbox" checked> Enabled</label><h2>Overdue follow-ups</h2><p>Find unpaid invoices past their due date and prepare a customer reminder.</p><div class="rule-flow">Invoice overdue <span>→</span> Reminder in outbox</div><small>Scheduled + on demand · one reminder per UTC day</small></article></div><div class="automation-actions"><button id="save-rules" class="secondary">Save rules</button><button id="run-automation" class="primary">▶ Run automation now</button></div><p id="scheduler-status" class="info-line" role="status"></p><p id="automation-result" role="status"></p><article class="card integration-card"><h2>Designed for a convincing live demo</h2><p>Run a batch twice to show duplicate prevention. Open Activity log to trace each action. External email delivery is disabled, so a demo cannot accidentally notify real customers.</p></article></section>
-<section id="view-outbox" class="view hidden"><div class="info-line">✉ Controlled delivery preview — these messages have not been emailed.</div><div id="outbox-list" class="message-list"></div></section>
-<section id="view-activity" class="view hidden"><article class="card"><div class="card-head"><h2>Every action leaves a trail.</h2><button id="refresh-activity" class="text-button">↻ Refresh</button></div><div id="activity-list" class="timeline"></div></article></section>
-<footer>Built for the people behind the invoices.<span>PayPilot v2.2 · Sandbox only</span></footer>
-</main></div></div>
-<dialog id="invoice-dialog"><div class="dialog-head"><div><span class="eyebrow">FROM WORDS TO WORKFLOW</span><h2>Create an invoice</h2></div><button class="close-dialog" aria-label="Close invoice dialog">✕</button></div><div class="prompt-box"><label for="prompt">Describe what you’re charging for</label><textarea id="prompt" rows="2" placeholder="Charge $250 USD for a logo design to maya@example.com"></textarea><button id="parse-prompt" class="secondary">✧ Fill details from prompt</button><small id="parser-status">Review the amount and currency before creating.</small></div><form id="invoice-form"><div class="form-grid"><label>Amount<input id="amount" type="number" step="0.01" min="0.01" max="9999999" required></label><label>Currency<select id="currency"><option>USD</option><option>EUR</option><option>GBP</option><option>CAD</option><option>AUD</option><option>SGD</option></select></label></div><div class="line-editor"><div class="card-head"><label>Optional invoice line items</label><button type="button" id="add-item" class="secondary">＋ Add item</button></div><div id="line-items"></div><p class="caption">When items are present, the invoice total is calculated from quantity × unit price. No taxes or fees are added.</p></div><label>Description<input id="description" maxlength="240" required placeholder="Logo design"></label><label>Customer email<input id="recipient" type="email" placeholder="customer@example.com"></label><label>Due in<select id="due-days"><option value="0">Today</option><option value="7" selected>7 days</option><option value="14">14 days</option><option value="30">30 days</option></select></label><p class="caption">This creates a sandbox or simulated invoice. It does not send an email or move real money.</p><button class="primary large" id="submit-invoice">Create invoice →</button><p id="form-error" role="alert"></p></form></dialog>
-<dialog id="detail-dialog"><div class="dialog-head"><h2 id="detail-title">Details</h2><button class="close-dialog" aria-label="Close details">✕</button></div><pre id="detail-body"></pre></dialog><div id="toast" class="toast hidden" role="status"></div><script src="/static/app.js"></script></body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PayPilot — Invoice & Payment Management</title>
 
+
+<link rel="stylesheet" href="/static/workspace.css">
+</head>
+<body>
+<noscript><div style="padding:24px;background:#fff0df;color:#753b15">This app requires JavaScript. Enable JavaScript in your browser to use the private workspace.</div></noscript>
+
+<!-- ============ SIGN IN ============ -->
+<div class="auth-wrap" id="authScreen">
+  <div class="auth-card">
+    <div class="brand">
+      <div class="brand-mark"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
+      <div><div class="brand-name">PayPilot</div><div class="brand-sub">Invoice & Payments</div></div>
+    </div>
+    <h1>Sign in to your workspace</h1>
+    <p>Track bank-transfer invoices, review payments, and manage collections.</p>
+    <div class="auth-error" id="authError" role="alert">Unable to sign in. Check your workspace password.</div>
+    <form id="loginForm" novalidate>
+
+      <div class="field"><label for="loginPass">Password</label><input id="loginPass" type="password" autocomplete="current-password" placeholder="Workspace password" required></div>
+      <button class="btn btn-primary btn-block" id="loginBtn" type="submit">Sign in</button>
+    </form>
+    <p class="auth-note">Private administrator workspace. Use the password configured on your server. No public or demonstration login.</p>
+  </div>
+</div>
+
+<!-- ============ APP SHELL ============ -->
+<div class="shell" id="appShell">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
+      <div><div class="brand-name">PayPilot</div><div class="brand-sub">Invoice & Payments</div></div>
+    </div>
+    <div class="nav-label">Workspace</div>
+    <button class="nav-item active" data-view="overview"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</button>
+    <button class="nav-item" data-view="invoices"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>Invoices</button>
+    <button class="nav-item" data-view="create"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>New invoice</button>
+    <button class="nav-item" data-view="review"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 0 2-2h11"/></svg>Payment review <span class="badge pending" id="reviewCount" style="margin-left:auto">0</span></button>
+    <div class="nav-label">Manage</div>
+    <button class="nav-item" data-view="collections"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>Collections</button>
+    <button class="nav-item" data-view="automations"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>Automations</button>
+    <button class="nav-item" data-view="drafts"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Message drafts</button>
+    <button class="nav-item" data-view="activity"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Activity</button>
+    <button class="nav-item" data-view="settings"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</button>
+    <div class="sidebar-foot"><button class="btn btn-ghost btn-sm" data-command="logout">Sign out</button><br>
+      <div style="display:flex;align-items:center;gap:10px"><div class="avatar">PP</div><div><div style="font-weight:600;color:var(--ink)" id="businessLabel">Private workspace</div><div>Administrator</div></div></div>
+      <div style="margin-top:12px">Tracks manual bank transfers.<br>Does not process payments.</div>
+    </div>
+  </aside>
+
+  <main class="main" id="mainContent">
+    <div class="topbar">
+      <div style="display:flex;align-items:center;gap:12px">
+        <button class="menu-btn" id="menuBtn" aria-label="Toggle navigation" aria-expanded="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+        <div><h1 id="pageTitle">Overview</h1><div class="crumb" id="pageCrumb">Workspace · This Week</div></div>
+      </div>
+      <div class="topbar-actions"><button class="btn btn-ghost btn-sm mobile-signout" data-command="logout">Sign out</button><button class="btn btn-ghost btn-sm" data-command="refresh">Refresh</button>
+        <span class="demo-flag"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>Manual bank transfers</span>
+        <button class="btn btn-primary btn-sm" data-view="create"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>New invoice</button>
+      </div>
+    </div>
+    <label class="page-picker" for="pagePicker">Go to page <select id="pagePicker" aria-label="Go to page"></select></label><div id="viewContainer" aria-live="polite"></div>
+  </main>
+
+  <nav class="mobile-nav" aria-label="Mobile navigation">
+    <div class="mobile-nav-inner" id="mobileNavInner"></div>
+  </nav>
+</div>
+
+<!-- ============ PUBLIC INVOICE VIEW ============ -->
+<div class="public-wrap hidden" id="publicScreen"></div>
+
+<!-- Dialog -->
+<div class="dialog-backdrop" id="dialogBackdrop" role="dialog" aria-modal="true">
+  <div class="dialog" id="dialogBox"></div>
+</div>
+<div class="toast-region" id="toastRegion" aria-live="polite"></div>
+
+
+<script src="/static/workspace.js" defer></script>
+</body></html>

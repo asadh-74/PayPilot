@@ -1,2 +1,4 @@
-'use strict';
+ 'use strict';
 document.querySelector('#print-document').onclick=()=>window.print();
+const form=document.querySelector('#transfer-report');
+if(form)form.onsubmit=async e=>{e.preventDefault();const button=form.querySelector('button');button.disabled=true;const result=document.querySelector('#report-result');try{const token=location.pathname.split('/').pop();const r=await fetch('/api/customer/'+encodeURIComponent(token)+'/report',{method:'POST',headers:{'Content-Type':'application/json','X-PayPilot-Client':'dashboard'},body:JSON.stringify({reference:form.elements.reference.value.trim()})});const data=await r.json();if(!r.ok)throw new Error(typeof data.detail==='string'?data.detail:'Check the reference and try again');result.textContent=data.message;}catch(error){result.textContent=error.message;}finally{button.disabled=false;}};
