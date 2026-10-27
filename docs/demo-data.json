@@ -1,0 +1,7 @@
+{
+  "fictional": true,
+  "customer": {"name": "Cedar Studio", "email": "billing@cedar.example", "address": "12 Example Street, Demo City", "tax_id": ""},
+  "invoice": {"description": "Consulting sessions", "currency": "USD", "quantity": 2, "unit_amount": "100.00", "total": "200.00"},
+  "local_demo_installment": {"amount": "50.00", "reference": "DEMO-TRANSFER-001", "remaining_balance": "150.00"},
+  "monthly_template": {"title": "Monthly support", "currency": "USD", "amount": "150.00"}
+}

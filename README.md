@@ -120,3 +120,13 @@ Tests cover sessions, workspace isolation, exact decimal totals, date validation
 These are portfolio/business-workflow features, not country-specific tax compliance or bank settlement verification. PDF fonts support Latin text; comprehensive multilingual/RTL typesetting is not implemented. No new paid service is required.
 
 Validation: 55 isolated SQLite backend tests passed, including PDF extraction, immutable billing snapshots, access isolation, revoked shares, sequential numbering/idempotency and currency-separated aging. Never point destructive test fixtures at the production database.
+
+## Business workflows (3.2)
+
+Customers can be saved and reused on new invoices. Quotes can be reviewed, cancelled or converted with a stable idempotency key. Monthly templates prepare invoice drafts through the existing automation loop (while enabled and the service is awake) or the **Prepare due drafts** button. Each run prepares at most one due period per template; month-end dates preserve the original billing-day anchor. Review and issue drafts explicitly; no customer email is sent automatically.
+
+The **Payment ledger** records verified installments with exact decimal amounts, workspace-wide unique bank references, duplicate-request handling and overpayment rejection. Reports, PDFs, customer pages and collection balances reflect the remaining amount. Prior reminder drafts become stale after an installment; stale sends are blocked. New reminders use balance-specific deduplication. Older full-payment records remain supported.
+
+Storage changes are additive: `pp_customers`, `pp_installments`, and `pp_business_drafts`. Existing invoice and payment records are preserved. No new paid infrastructure is introduced.
+
+Validation: 61 SQLite backend tests, including customer isolation, quote retries/cancellation, recurring preparation, partial-payment totals, overpayment rejection and stale reminders. See [portfolio demonstration guide](docs/PORTFOLIO_DEMO.md) and [fictional example data](docs/demo-data.json). Tests use disposable local databases, not the hosted MySQL database.

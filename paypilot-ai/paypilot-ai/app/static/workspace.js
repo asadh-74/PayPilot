@@ -36,7 +36,7 @@ document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeDialog(); if(
 /* =====================================================================
    ROUTER
 ===================================================================== */
-const TITLES={overview:['Overview','Workspace · This Week'],invoices:['Invoices','Search, filter and manage invoices'],
+const TITLES={customers:['Customers','Reusable billing contacts'],business:['Quotes & recurring','Review drafts before issuing invoices'],ledger:['Payment ledger','Verified installments and balances'],overview:['Overview','Workspace · This Week'],invoices:['Invoices','Search, filter and manage invoices'],
   create:['New invoice','Create and share a bank-transfer invoice'],review:['Payment review','Verify submitted transfer references'],
   reports:['Reports','Receivables by currency · manual invoices'],collections:['Collections','Overdue aging and follow-up priorities'],automations:['Automations','Receipt and reminder workflows'],
   drafts:['Message drafts','Receipts, invoice emails and reminders — review before sending'],activity:['Activity','Workspace timeline'],settings:['Settings','Business and bank details']};
@@ -74,10 +74,10 @@ V.overview=function(){
   const overdue=invs.filter(i=>invoiceStatus(i)==='overdue');
   // collection rate per currency (never mix currencies)
   const byCur={};
-  invs.forEach(i=>{ byCur[i.currency]=byCur[i.currency]||{total:0,paid:0}; byCur[i.currency].total+=invoiceTotal(i); if(i.status==='paid') byCur[i.currency].paid+=invoiceTotal(i); });
+  invs.forEach(i=>{ byCur[i.currency]=byCur[i.currency]||{total:0,paid:0}; byCur[i.currency].total+=invoiceTotal(i); byCur[i.currency].paid+=i.paidAmount; });
   const avgRate=Object.entries(byCur).map(([c,v])=>c+' '+Math.round(v.paid/v.total*100)+'%').join(' · ')||'—';
   // per-currency outstanding summary
-  const outByCur={}; outstanding.forEach(i=>{outByCur[i.currency]=(outByCur[i.currency]||0)+invoiceTotal(i)});
+  const outByCur={}; outstanding.forEach(i=>{outByCur[i.currency]=(outByCur[i.currency]||0)+i.balance});
   const outSummary=Object.entries(outByCur).map(([c,a])=>fmt(a,c)).join(' · ')||'No balance';
   const recent=[...invs].sort((a,b)=>b.issued.localeCompare(a.issued)).slice(0,5);
 
@@ -130,7 +130,7 @@ function invoiceTable(rows,withActions=true){
     <td style="font-weight:600">${i.number}</td>
     <td><div style="font-weight:500">${esc(custName(i.customerId))}</div><div class="small muted">${i.currency} · ${i.mode==='manual'?'manual transfer':i.mode==='demo'?'simulated payment':'sandbox payment'}</div></td>
     <td><span class="badge ${st}">${st==='paid'?'Paid':st==='overdue'?'Overdue':'Pending'}</span></td>
-    <td class="num" style="font-weight:600">${fmt(invoiceTotal(i),i.currency)}</td>
+    <td class="num" style="font-weight:600">${fmt(invoiceTotal(i),i.currency)}<div class="small muted">Due ${fmt(i.balance,i.currency)}</div></td>
     <td class="muted">${fmtDate(i.issued)}</td>
     <td class="${st==='overdue'?'':''}" style="${st==='overdue'?'color:var(--danger);font-weight:600':''}">${fmtDate(i.due)}</td>
     ${withActions?`<td class="row-actions">
@@ -165,7 +165,7 @@ V.create=function(){
   <div class="grid grid-2-1">
     <div class="card card-pad">
       <div class="form-grid">
-        <div class="field"><label for="fCustomer">Customer name</label><input id="fCustomer" maxlength="120" placeholder="Business or customer name" required></div>
+        <div class="field"><label for="savedCustomer">Saved customer</label><select id="savedCustomer"><option value="">Enter manually</option>${(DB.directory||[]).map(c=>`<option value="${esc(c.id)}">${esc(c.name)} — ${esc(c.email)}</option>`).join('')}</select></div><div class="field"><label for="fCustomer">Customer name</label><input id="fCustomer" maxlength="120" placeholder="Business or customer name" required></div>
         <div class="field"><label for="fEmail">Customer email (optional)</label><input id="fEmail" type="email" maxlength="254" placeholder="billing@customer.example"></div>
         <div class="field"><label for="fAddress">Customer billing address</label><textarea id="fAddress" maxlength="800" rows="2" placeholder="Street, city, postal code, country"></textarea></div><div class="field"><label for="fTaxId">Customer tax / registration reference (optional)</label><input id="fTaxId" maxlength="100"></div><div class="field"><label for="fPO">Purchase order (optional)</label><input id="fPO" maxlength="100"></div><div class="field"><label for="fCurrency">Currency</label><select id="fCurrency">${Object.keys(CURRENCIES).map(c=>`<option>${c}</option>`).join('')}</select><p class="small muted">Totals stay in the selected currency.</p></div>
         <div class="field"><label for="fIssued">Issue date</label><input id="fIssued" type="date" value="${daysFromNow(0)}"></div>
@@ -181,7 +181,7 @@ V.create=function(){
       <div class="field"><label for="fNotes">Notes to customer (optional)</label><textarea id="fNotes" rows="2" placeholder="Payment terms, thank-you note…"></textarea></div>
       <div style="display:flex;gap:10px;margin-top:8px">
         <button class="btn btn-primary" id="saveInvoice">Create invoice</button><button class="btn btn-soft" id="createEmailInvoice">Create & prepare email</button>
-        <button class="btn btn-ghost" data-view="invoices">Cancel</button>
+        <button class="btn btn-soft" data-business="save-quote">Save as quote</button><button class="btn btn-soft" data-business="save-recurring">Save monthly template</button><button class="btn btn-ghost" data-view="invoices">Cancel</button>
       </div>
     </div>
     <div>
@@ -261,7 +261,7 @@ V.collections=function(){
       <h2 class="section-title">Overdue aging</h2>
       ${buckets.map(b=>{
         const rows=overdue.filter(i=>{const d=Math.floor((today-new Date(i.due))/86400000);return d>=b.min&&d<=b.max});
-        const byCur={}; rows.forEach(i=>byCur[i.currency]=(byCur[i.currency]||0)+invoiceTotal(i));
+        const byCur={}; rows.forEach(i=>byCur[i.currency]=(byCur[i.currency]||0)+i.balance);
         return `<div style="padding:12px 0;border-bottom:1px solid var(--line-soft)">
           <div style="display:flex;justify-content:space-between;align-items:center">
             <span style="font-weight:600;font-size:14px">${b.label}</span>
@@ -370,12 +370,12 @@ async function action(button,fn){if(button?.disabled)return;if(button)button.dis
 function showAuth(){document.getElementById('authScreen').style.display='flex';document.getElementById('appShell').classList.remove('active');document.getElementById('publicScreen').classList.add('hidden');document.getElementById('authScreen').querySelector('input')?.focus();}
 function applySnapshot(s){
  DB.database=s.database==='mysql'?'MySQL connected':'Local SQLite';document.getElementById('businessLabel').textContent=s.business.business_name;
- DB.emailReady=Boolean(s.email_ready);DB.business={name:s.business.business_name,instructions:s.business.payment_instructions};DB.billing=s.billing_profile||{};
+ DB.directory=s.customer_directory||[];DB.businessDrafts=s.business_drafts||[];DB.emailReady=Boolean(s.email_ready);DB.business={name:s.business.business_name,instructions:s.business.payment_instructions};DB.billing=s.billing_profile||{};
  const meta=new Map(s.metadata.map(m=>[m.payment_id,m]));
  DB.customers=s.invoices.map(p=>({id:p.id,name:meta.get(p.id)?.customer_name||p.recipient_email||'Customer',contact:p.recipient_email||''}));
- DB.invoices=s.invoices.map(p=>{const m=meta.get(p.id),items=s.items.filter(i=>i.payment_id===p.id);return {id:p.id,number:(s.invoice_documents||[]).find(d=>d.payment_id===p.id)?.invoice_number||'INV-'+p.id.slice(0,8).toUpperCase(),customerId:p.id,currency:p.currency,status:p.status==='CAPTURED'?'paid':'pending',issued:m?.issued_date||iso(p.created_at),due:iso(p.due_at),notes:m?.notes||'',mode:p.mode,description:p.description,amount:p.amount,items:items.length?items.map(i=>({desc:i.description,qty:i.quantity,price:i.unit_amount})):[{desc:p.description,qty:1,price:p.amount}]};});
+ DB.invoices=s.invoices.map(p=>{const m=meta.get(p.id),items=s.items.filter(i=>i.payment_id===p.id);return {id:p.id,number:(s.invoice_documents||[]).find(d=>d.payment_id===p.id)?.invoice_number||'INV-'+p.id.slice(0,8).toUpperCase(),customerId:p.id,currency:p.currency,status:p.status==='CAPTURED'?'paid':'pending',issued:m?.issued_date||iso(p.created_at),due:iso(p.due_at),notes:m?.notes||'',mode:p.mode,description:p.description,amount:p.amount,paidAmount:Number(p.paid_amount||0),balance:Number(p.balance_due??p.amount),items:items.length?items.map(i=>({desc:i.description,qty:i.quantity,price:i.unit_amount})):[{desc:p.description,qty:1,price:p.amount}]};});
  DB.reviews=s.reports.map(r=>({id:r.payment_id,invoiceId:r.payment_id,reference:r.reference,submitted:iso(r.created_at),note:'',status:r.status==='SUBMITTED'?'awaiting':r.status==='APPROVED'?'confirmed':'rejected'}));
- DB.drafts=s.drafts.map(d=>({id:d.id,kind:d.kind,invoiceId:d.payment_id,subject:d.subject,body:d.body,recipient:d.recipient,status:d.status==='SENT'?'sent':'draft',delivery:(s.deliveries||[]).find(x=>x.outbox_id===d.id)?.status,created:iso(d.created_at)}));
+ DB.drafts=s.drafts.filter(d=>d.status!=='STALE').map(d=>({id:d.id,kind:d.kind,invoiceId:d.payment_id,subject:d.subject,body:d.body,recipient:d.recipient,status:d.status==='SENT'?'sent':'draft',delivery:(s.deliveries||[]).find(x=>x.outbox_id===d.id)?.status,created:iso(d.created_at)}));
  DB.activity=s.activity.map(a=>({at:iso(a.created_at),tone:a.kind.includes('rejected')?'red':a.kind.includes('verified')?'green':'stone',text:a.detail+' · '+a.kind}));
  DB.automations={receiptOnConfirm:{on:s.rules.receipts,label:'Receipt drafts',desc:'Prepare a receipt draft after administrator confirmation.'},overdueNotice:{on:s.rules.reminders,label:'Overdue reminders',desc:'Prepare a daily reminder draft for overdue invoices. References awaiting review pause reminders.'}};
  DB.automationRuns=s.latest_run?[{at:iso(s.latest_run.completed_at),text:s.latest_run.queued+' drafts prepared in latest completed run. No messages sent.'}]:[];
@@ -403,7 +403,7 @@ function bindView(){
   renderItems();requestKey=requestKey||uuid();
   document.getElementById('parseSentence').onclick=e=>action(e.currentTarget,generateSentence);
   document.getElementById('sentenceExample').onclick=()=>{document.getElementById('sentencePrompt').value='Invoice Cedar Studio at billing@customer.example for 2 logo designs at PKR 5000 each; 3 banners at PKR 1000 each, due in 14 days.';document.getElementById('sentencePrompt').focus();};
-  document.getElementById('fCurrency').onchange=renderItems;
+  document.getElementById('savedCustomer').onchange=e=>{const c=DB.directory.find(c=>c.id===e.target.value);if(!c)return;for(const [id,key] of [['fCustomer','name'],['fEmail','email'],['fAddress','address'],['fTaxId','tax_id']])document.getElementById(id).value=c[key]||'';requestKey=uuid();};document.getElementById('fCurrency').onchange=renderItems;
   document.getElementById('addItem').onclick=()=>{if(draftItems.length>=30){toast('Maximum 30 line items');return;}draftItems.push({desc:'',qty:1,price:''});renderItems();requestKey=uuid();};
   document.getElementById('itemsBody').oninput=e=>{const t=e.target;if(t.dataset.idx===undefined)return;draftItems[+t.dataset.idx][t.dataset.f]=t.value;requestKey=uuid();updateTotals();};
   document.getElementById('itemsBody').onclick=e=>{const b=e.target.closest('[data-del]');if(b){draftItems.splice(+b.dataset.del,1);renderItems();requestKey=uuid();}};
@@ -429,7 +429,7 @@ async function saveInvoice(prepareEmail=false){
 async function shareInvoice(id){const result=await api('/payments/'+encodeURIComponent(id)+'/share','POST',{});const url=new URL(result.path,location.origin).href;openDialog('<h2>Customer invoice link</h2><div class="dialog-body"><p>This private link expires in 24 hours. Creating a new link revokes the previous one. Share it directly with your customer.</p><input id="shareLink" aria-label="Customer invoice link" readonly style="width:100%;padding:12px" value="'+esc(url)+'"><p><a class="btn btn-soft" target="_blank" rel="noopener" href="'+esc(result.path)+'">Open customer invoice ↗</a></p></div><div class="dialog-actions"><button class="btn btn-ghost" data-command="close">Close</button><button class="btn btn-ghost" data-command="revoke" data-id="'+esc(id)+'">Revoke link</button><button class="btn btn-primary" data-command="copy">Share</button></div>');}
 async function reviewPayment(id,confirm){
  const report=DB.reviews.find(r=>r.id===id),inv=DB.invoices.find(i=>i.id===report.invoiceId);if(!report||!inv||report.status!=='awaiting')throw Error('Reference is no longer awaiting review');
- const amount=fmt(invoiceTotal(inv),inv.currency);
+ const amount=fmt(inv.balance,inv.currency);
  openDialog('<h2>'+ (confirm?'Confirm recorded payment':'No matching transfer')+'</h2><div class="dialog-body"><p>'+esc(inv.number)+' · '+esc(custName(inv.customerId))+' · <strong>'+esc(amount)+'</strong></p><p>Submitted reference: <strong>'+esc(report.reference)+'</strong></p><p>'+ (confirm?'Check the bank statement independently. PayPilot cannot verify bank transactions.':'The invoice will stay unpaid. The customer may submit a corrected reference.')+'</p>'+(confirm?'<label style="display:flex;gap:12px;margin-top:20px"><input type="checkbox" id="statementChecked">I checked the statement and matched the amount, currency and reference.</label>':'')+'<p id="actionError" role="alert" style="color:var(--danger)"></p></div><div class="dialog-actions"><button class="btn btn-ghost" data-command="close">Cancel</button><button class="btn btn-primary" id="reviewSubmit">'+(confirm?'Confirm payment':'Mark no match')+'</button></div>');
  document.getElementById('reviewSubmit').onclick=e=>action(e.currentTarget,async()=>{if(confirm&&!document.getElementById('statementChecked').checked)throw Error('Confirm that you checked the bank statement');await api('/payments/'+encodeURIComponent(id)+(confirm?'/confirm-manual':'/reject-reference'),'POST',confirm?{reference:report.reference,verified:true}:{});closeDialog();await reloadView();toast(confirm?'Payment recorded. Receipt available; no message sent.':'Reference rejected. Invoice remains unpaid.');});
 }

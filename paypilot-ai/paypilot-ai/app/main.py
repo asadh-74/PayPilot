@@ -49,7 +49,7 @@ async def lifespan(app):
             worker.join(timeout=25)
         db.engine.dispose()
 
-app = FastAPI(title='PayPilot API', version='3.1.0', lifespan=lifespan,
+app = FastAPI(title='PayPilot API', version='3.2.0', lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
 app.mount('/static', StaticFiles(directory=STATIC), name='static')
 
@@ -139,7 +139,8 @@ def payment(conn, pid, owner=None, lock=False):
     row = conn.execute(query).mappings().first()
     if not row:
         raise HTTPException(404, 'Payment not found')
-    return dict(row)
+    from .business import balances
+    return balances(conn,dict(row))
 
 def public(row):
     return {k: format(v, '.2f') if isinstance(v, Decimal) else v for k,v in dict(row).items()
@@ -150,11 +151,13 @@ def audit(conn, owner, pid, kind, detail, event_id=None):
                  payment_id=pid, kind=kind, detail=detail, created_at=time.time()))
 
 def queue_message(conn, p, kind, key):
+    from .business import balances
+    p=balances(conn,p)
     if conn.execute(select(db.outbox.c.id).where(db.outbox.c.id == key)).first():
         return False
     body = (f"{'DEMO — simulated payment. ' if p['mode']=='demo' else ('Payment recorded by business owner — manual verification. ' if kind=='receipt' else 'Invoice awaiting payment — manual bank transfer. ') if p['mode']=='manual' else 'PAYPAL SANDBOX — test funds only. '}"
             f"{'Payment received' if kind=='receipt' else 'Payment reminder'}: "
-            f"{p['amount']:.2f} {p['currency']} for {p['description']}. Reference {p['id']}.")
+            f"{(p.get('balance_due',p['amount']) if kind!='receipt' else p['amount']):.2f} {p['currency']} for {p['description']}. Reference {p['id']}.")
     conn.execute(db.outbox.insert().values(id=key, owner_id=p['owner_id'], payment_id=p['id'],
                  recipient=p['recipient_email'] or 'customer@example.com', kind=kind,
                  subject=f"{kind.title()} · {p['description'][:120]}", body=body,
@@ -201,7 +204,7 @@ def health():
     try:
         with db.engine.connect() as conn:
             conn.execute(text('SELECT 1'))
-        return {'status':'ok','database':db.engine.dialect.name,'version':'3.1.0'}
+        return {'status':'ok','database':db.engine.dialect.name,'version':'3.2.0'}
     except Exception:
         raise HTTPException(503,'Database is not ready')
 
@@ -322,7 +325,8 @@ def create_payment(body: PaymentInput,request: Request,user=Depends(security.cur
 @app.get('/api/payments')
 def list_payments(user=Depends(security.current_user)):
     with db.engine.connect() as conn:
-        return [public(p) for p in conn.execute(select(db.payments).where(db.payments.c.owner_id==user['id']).order_by(db.payments.c.created_at.desc())).mappings()]
+        from .business import balance_rows
+        return [public(p) for p in balance_rows(conn,conn.execute(select(db.payments).where(db.payments.c.owner_id==user['id']).order_by(db.payments.c.created_at.desc())).mappings())]
 
 @app.post('/api/payments/{pid}/simulate')
 def simulate(pid: str,user=Depends(security.current_user)):
@@ -373,9 +377,10 @@ def analytics(user=Depends(security.current_user)):
     for p in rows:
         c=currencies.setdefault(p['currency'],{'captured':Decimal(0),'pending':Decimal(0),'overdue':Decimal(0)})
         amount=Decimal(str(p['amount']))
-        c['captured' if p['status']=='CAPTURED' else 'pending']+=amount
+        c['captured']+=Decimal(str(p['paid_amount']))
+        c['pending']+=Decimal(str(p['balance_due']))
         if p['status']!='CAPTURED' and p['due_at']<time.time():
-            c['overdue']+=amount
+            c['overdue']+=Decimal(str(p['balance_due']))
     daily=[]
     for offset in range(6,-1,-1):
         day=datetime.fromtimestamp(time.time()-offset*86400,timezone.utc).date()
@@ -417,7 +422,9 @@ def run_rules(user=Depends(security.current_user)):
                 waiting=conn.execute(select(db.payment_reports.c.payment_id).where(db.payment_reports.c.payment_id==p['id'],db.payment_reports.c.status=='SUBMITTED')).first()
                 if waiting:
                     continue
-                queued+=queue_message(conn,p,'reminder',f"reminder-{p['id']}-{day}")
+                from .business import balances
+                remaining=balances(conn,p)['balance_due']
+                queued+=queue_message(conn,p,'reminder',hashlib.sha256(f"reminder-{p['id']}-{day}-{remaining:.2f}".encode()).hexdigest())
         conn.execute(delete(db.automation_runs).where(db.automation_runs.c.owner_id==user['id']))
         conn.execute(db.automation_runs.insert().values(owner_id=user['id'],started_at=started,completed_at=time.time(),queued=queued))
         if queued:
@@ -512,6 +519,9 @@ def automation_tick():
     for owner in owners:
         try:
             run_rules(dict(owner))
+            if owner['role']=='admin':
+                from .business import prepare_recurring
+                prepare_recurring(dict(owner))
         except Exception:
             # Keep other workspaces running; do not log database secrets.
             import logging
@@ -553,7 +563,7 @@ def collections(user=Depends(security.current_user)):
         bucket = 'not_due' if days <= 0 else 'days_1_7' if days <= 7 else 'days_8_30' if days <= 30 else 'days_31_plus'
         group = groups.setdefault(p['currency'], {k: Decimal('0') for k in (
             'not_due', 'days_1_7', 'days_8_30', 'days_31_plus', 'due_next_7_days')})
-        amount = Decimal(str(p['amount']))
+        amount = Decimal(str(p['balance_due']))
         group[bucket] += amount
         if now <= p['due_at'] <= now + 7 * 86400:
             group['due_next_7_days'] += amount
@@ -663,7 +673,7 @@ def customer_invoice(token: str):
     document_mode='MANUAL PAYMENT RECORD' if p['mode']=='manual' else 'SANDBOX / DEMO'
     disclaimer='PayPilot records invoices and payment confirmations. Bank transfers occur outside this app; payment status is verified manually by the business owner.' if p['mode']=='manual' else 'No real funds move in sandbox or demo mode.'
     business=escape((prefs or {}).get('business_name') or 'PayPilot')
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PayPilot invoice</title><link rel="stylesheet" href="/static/workspace.css"></head><body><main class="customer-document"><a class="brand" href="/">◈ PayPilot</a><article class="card"><span class="eyebrow">{'PAYMENT RECEIPT' if paid else 'INVOICE'} · {document_mode}</span><p class="eyebrow">{business}</p><h1>{desc}</h1><p>Bill to: {customer}</p><p>Invoice {ref}</p><pre>{escape(billing.get("customer_address", ""))}</pre><p>{escape("Purchase order: "+billing["purchase_order"]) if billing.get("purchase_order") else ""}</p><p>{notes}</p>{lines}<h2>Total {amount}</h2><p>Due {due} UTC</p><p>Status: {'Payment confirmed' if paid else 'Awaiting payment'}</p>{checkout}<hr><p>{disclaimer} This private link expires in 24 hours and can be revoked by its owner.</p><a class="btn btn-soft" href="/api/customer/{escape(token,quote=True)}/pdf">Download invoice PDF</a><button class="secondary" id="print-document">Print / Save PDF</button><p class="caption">Use your browser’s Save as PDF destination.</p></article></main><script src="/static/document.js"></script></body></html>"""
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PayPilot invoice</title><link rel="stylesheet" href="/static/workspace.css"></head><body><main class="customer-document"><a class="brand" href="/">◈ PayPilot</a><article class="card"><span class="eyebrow">{'PAYMENT RECEIPT' if paid else 'INVOICE'} · {document_mode}</span><p class="eyebrow">{business}</p><h1>{desc}</h1><p>Bill to: {customer}</p><p>Invoice {ref}</p><pre>{escape(billing.get("customer_address", ""))}</pre><p>{escape("Purchase order: "+billing["purchase_order"]) if billing.get("purchase_order") else ""}</p><p>{notes}</p>{lines}<h2>Total {amount}</h2><p>Recorded payments: {p["paid_amount"]:.2f} {p["currency"]} · Balance due: {p["balance_due"]:.2f} {p["currency"]}</p><p>Due {due} UTC</p><p>Status: {'Payment confirmed' if paid else 'Awaiting payment'}</p>{checkout}<hr><p>{disclaimer} This private link expires in 24 hours and can be revoked by its owner.</p><a class="btn btn-soft" href="/api/customer/{escape(token,quote=True)}/pdf">Download invoice PDF</a><button class="secondary" id="print-document">Print / Save PDF</button><p class="caption">Use your browser’s Save as PDF destination.</p></article></main><script src="/static/document.js"></script></body></html>"""
 
 @app.post('/api/payments/{pid}/reminder-preview')
 def reminder_preview(pid: str,user=Depends(security.current_user)):
@@ -673,7 +683,7 @@ def reminder_preview(pid: str,user=Depends(security.current_user)):
         raise HTTPException(409,'Paid invoices do not need a reminder')
     due=datetime.fromtimestamp(p['due_at'],timezone.utc).strftime('%d %b %Y')
     return {'subject':'Friendly follow-up: '+p['description'],
-        'body':f"Hello, a friendly reminder about {p['description']} for {p['amount']:.2f} {p['currency']}, due {due}. Please let us know if you need any help. Reference {pid}.",
+        'body':f"Hello, a friendly reminder about {p['description']} for {p['balance_due']:.2f} {p['currency']}, due {due}. Please let us know if you need any help. Reference {pid}.",
         'delivery':'Draft only; not sent','basis':'Invoice amount and due date; deterministic template'}
 
 
@@ -776,6 +786,11 @@ def confirm_manual(pid: str,body: ConfirmPayment,user=Depends(security.current_u
         duplicate=conn.execute(select(db.payment_reports.c.payment_id).where(db.payment_reports.c.owner_id==user['id'],db.payment_reports.c.reference==body.reference,db.payment_reports.c.status=='APPROVED',db.payment_reports.c.payment_id!=pid)).first()
         if duplicate:
             raise HTTPException(409,'This transfer reference is already recorded against another invoice')
+        from .business import balances
+        if balances(conn,p)['paid_amount']>0:
+            raise HTTPException(409,'This invoice has installments. Record the remaining balance through the payment ledger.')
+        if conn.scalar(select(db.installments.c.id).where(db.installments.c.owner_id==user['id'],db.installments.c.reference==body.reference)):
+            raise HTTPException(409,'Transfer reference already recorded')
         capture_local(conn,p)
         conn.execute(delete(db.payment_reports).where(db.payment_reports.c.payment_id==pid))
         conn.execute(db.payment_reports.insert().values(payment_id=pid,owner_id=user['id'],reference=body.reference,status='APPROVED',created_at=time.time(),reviewed_at=time.time()))
@@ -802,6 +817,10 @@ def workspace_snapshot(user=Depends(security.current_user)):
     admin_only(user)
     with db.engine.connect() as conn:
         invoices=conn.execute(select(db.payments).where(db.payments.c.owner_id==user['id']).order_by(db.payments.c.created_at.desc())).mappings().all()
+        from .business import balance_rows
+        customer_directory=[dict(x) for x in conn.execute(select(db.customers).where(db.customers.c.owner_id==user['id'])).mappings()]
+        business_drafts=[{**dict(x),'invoice':json.loads(x['data_json'])} for x in conn.execute(select(db.business_drafts).where(db.business_drafts.c.owner_id==user['id']).order_by(db.business_drafts.c.created_at.desc())).mappings()]
+        invoices=balance_rows(conn,invoices)
         metadata=conn.execute(select(db.invoice_metadata).where(db.invoice_metadata.c.owner_id==user['id'])).mappings().all()
         line_items=conn.execute(select(db.items).join(db.payments,db.items.c.payment_id==db.payments.c.id).where(db.payments.c.owner_id==user['id']).order_by(db.items.c.position)).mappings().all()
         reports=conn.execute(select(db.payment_reports).where(db.payment_reports.c.owner_id==user['id'])).mappings().all()
@@ -814,7 +833,7 @@ def workspace_snapshot(user=Depends(security.current_user)):
         from .billing import business_profile
         profile=business_profile(conn,user['id'])
         documents=conn.execute(select(db.invoice_documents).where(db.invoice_documents.c.owner_id==user['id'])).mappings().all()
-    return {'billing_profile':profile,'invoice_documents':[{'payment_id':d['payment_id'],'invoice_number':d['invoice_number']} for d in documents],'invoices':[public(r) for r in invoices], 'metadata':[public(r) for r in metadata],
+    return {'customer_directory':customer_directory,'business_drafts':business_drafts,'billing_profile':profile,'invoice_documents':[{'payment_id':d['payment_id'],'invoice_number':d['invoice_number']} for d in documents],'invoices':[public(r) for r in invoices], 'metadata':[public(r) for r in metadata],
         'items':[public(r) for r in line_items], 'reports':[public(r) for r in reports],
         'drafts':[public(r) for r in messages], 'deliveries':[public(r) for r in deliveries], 'email_ready':mail_service.ready(),'email_provider':mail_service.provider(), 'activity':[public(r) for r in activity],
         'rules':{'receipts':bool(rule['receipts']),'reminders':bool(rule['reminders'])},
@@ -872,6 +891,7 @@ def send_message(message_id: str,body: SendMessage,user=Depends(security.current
         conn.execute(select(db.users).where(db.users.c.id==user['id']).with_for_update()).first()
         message=conn.execute(select(db.outbox).where(db.outbox.c.id==message_id,db.outbox.c.owner_id==user['id'])).mappings().first()
         if not message: raise HTTPException(404,'Message unavailable')
+        if message['status']=='STALE':raise HTTPException(409,'The payment balance changed. Prepare a fresh reminder before sending.')
         p=payment(conn,message['payment_id'],user['id'])
         if p['mode']!='manual': raise HTTPException(409,'Only business messages may be sent')
         address=message['recipient'] or ''
@@ -935,3 +955,6 @@ def resolve_email_retry(message_id: str,body: RetryCheck,user=Depends(security.c
 
 from .billing import router as billing_router
 app.include_router(billing_router)
+
+from .business import router as business_router
+app.include_router(business_router)

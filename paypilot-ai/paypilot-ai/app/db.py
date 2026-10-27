@@ -71,6 +71,19 @@ invoice_documents = Table('pp_invoice_documents', metadata,
     Column('payment_id', String(36), primary_key=True), Column('owner_id', String(64), nullable=False, index=True),
     Column('invoice_number', String(40), nullable=False), Column('data_json', Text, nullable=False),
     UniqueConstraint('owner_id', 'invoice_number', name='pp_owner_invoice_number'))
+customers=Table('pp_customers',metadata,
+    Column('id',String(36),primary_key=True),Column('owner_id',String(64),index=True),
+    Column('name',String(160)),Column('email',String(254)),Column('address',Text),Column('tax_id',String(100)),
+    UniqueConstraint('owner_id','email',name='pp_customer_email'))
+installments=Table('pp_installments',metadata,
+    Column('id',String(36),primary_key=True),Column('owner_id',String(64),index=True),
+    Column('payment_id',String(36),index=True),Column('amount',Numeric(12,2)),Column('reference',String(120)),Column('created_at',Float(53)),
+    UniqueConstraint('owner_id','reference',name='pp_installment_reference'))
+business_drafts=Table('pp_business_drafts',metadata,
+    Column('id',String(36),primary_key=True),Column('owner_id',String(64),index=True),Column('title',String(180)),
+    Column('kind',String(24)),Column('status',String(24)),Column('data_json',Text),Column('next_date',String(10)),
+    Column('payment_id',String(36)),Column('created_at',Float(53)))
+
 engine = None
 
 def init_db():

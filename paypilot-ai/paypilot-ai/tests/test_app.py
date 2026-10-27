@@ -645,3 +645,93 @@ def test_invoice_numbers_idempotent(client,monkeypatch):
     docs=client.get('/api/workspace/snapshot').json()['invoice_documents']
     assert len(docs)==2
     assert sorted(d['invoice_number'][-6:] for d in docs)==['000001','000002']
+
+def admin_login(c):
+    assert c.post('/api/auth/login',json={'password':'test-only-password-long-enough'}).status_code==200
+
+def test_customer_directory_validation_and_isolation(client):
+    admin_login(client)
+    body={'name':'Cedar Studio','email':'BILLING@example.com','address':'Fictional address'}
+    r=client.post('/api/customers',json=body);assert r.status_code==200
+    id=r.json()['id'];assert r.json()['email']=='billing@example.com'
+    assert client.post('/api/customers',json=body).status_code==409
+    assert client.put('/api/customers/'+id,json={**body,'name':'Updated'}).status_code==200
+    assert client.get('/api/customers').json()[0]['name']=='Updated'
+    assert client.post('/api/customers',json={**body,'email':'bad'}).status_code==422
+    demo(client);assert client.get('/api/customers').status_code==403
+
+def test_installments_exact_balance_idempotency_and_overpay(client,monkeypatch):
+    monkeypatch.setenv('PAYMENT_MODE','manual');admin_login(client)
+    p=create(client,amount='100').json();url=f"/api/payments/{p['id']}/installments"
+    body={'amount':'30.10','reference':'BANK-ONE','verified':True}
+    assert client.post(url,json={**body,'verified':False}).status_code==422
+    first=client.post(url,json=body);assert first.status_code==200
+    assert first.json()['balance_due']=='69.90'
+    assert client.post(url,json=body).json()['balance_due']=='69.90'
+    assert client.post(url,json={**body,'amount':'31'}).status_code==409
+    assert client.post(url,json={**body,'reference':'BANK-TWO','amount':'70'}).status_code==409
+    assert client.post(f"/api/payments/{p['id']}/confirm-manual",json={'reference':'BANK-TWO','verified':True}).status_code==409
+    report=client.get('/api/reports/receivables').json()['currencies']['USD']
+    assert report['paid']=='30.10' and report['outstanding']=='69.90'
+    a=client.get('/api/analytics').json()['currencies']['USD']
+    assert Decimal(str(a['captured']))==Decimal('30.10') and Decimal(str(a['pending']))==Decimal('69.90')
+    assert client.post(url,json={**body,'reference':'BANK-TWO','amount':'69.90'}).json()['status']=='CAPTURED'
+    assert len(client.get(url).json()['entries'])==2
+    assert client.get('/api/reports/receivables').json()['currencies']['USD']['paid']=='100.00'
+    other=create(client).json()
+    assert client.post(f"/api/payments/{other['id']}/installments",json=body).status_code==409
+
+def test_quote_conversion_retries_and_cancel(client,monkeypatch):
+    monkeypatch.setenv('PAYMENT_MODE','manual');admin_login(client)
+    body={'title':'Website proposal','invoice':{'amount':'200','description':'Website','customer_name':'Example'}}
+    r=client.post('/api/business-drafts',json=body);assert r.status_code==200
+    id=r.json()['id'];url='/api/business-drafts/'+id+'/convert'
+    first=client.post(url);assert first.status_code==200,first.text
+    assert client.post(url).json()['id']==first.json()['id']
+    assert len(client.get('/api/payments').json())==1
+    assert client.get('/api/outbox').json()==[]
+    id2=client.post('/api/business-drafts',json=body).json()['id']
+    assert client.post('/api/business-drafts/'+id2+'/cancel').status_code==200
+    assert client.post('/api/business-drafts/'+id2+'/convert').status_code==409
+
+def test_recurring_drafts_only_and_no_duplicate(client):
+    from datetime import date
+    admin_login(client)
+    r=client.post('/api/business-drafts',json={'title':'Monthly support','kind':'recurring','next_date':date.today().isoformat(),'invoice':{'amount':'150','description':'Support'}})
+    assert r.status_code==200
+    assert client.post('/api/recurring/prepare').json()['prepared']==1
+    assert client.post('/api/recurring/prepare').json()['prepared']==0
+    assert client.get('/api/payments').json()==[] and client.get('/api/outbox').json()==[]
+    rows=client.get('/api/business-drafts').json()
+    draft=next(x for x in rows if x['kind']=='invoice_draft')
+    assert client.post('/api/business-drafts/'+draft['id']+'/convert').status_code==200
+
+def test_partial_payment_pdf_and_stale_reminder(client,monkeypatch):
+    import time
+    from io import BytesIO
+    from pypdf import PdfReader
+    monkeypatch.setenv('PAYMENT_MODE','manual');admin_login(client)
+    p=create(client,amount='100').json()
+    with db.engine.begin() as conn:conn.execute(update(db.payments).where(db.payments.c.id==p['id']).values(due_at=time.time()-86400))
+    client.post('/api/automations/run')
+    original=client.get('/api/outbox').json()[0]
+    client.post(f"/api/payments/{p['id']}/installments",json={'amount':'25','reference':'BANK-PARTIAL','verified':True})
+    assert next(x for x in client.get('/api/outbox').json() if x['id']==original['id'])['status']=='STALE'
+    assert client.post('/api/automations/run').json()['queued']==1
+    current=next(x for x in client.get('/api/outbox').json() if x['status']=='DRAFT')
+    assert '75.00 USD' in current['body'] and len(current['id'])<=64
+    pdf=client.get(f"/api/payments/{p['id']}/pdf")
+    text=''.join(p.extract_text() for p in PdfReader(BytesIO(pdf.content)).pages)
+    assert 'Balance due: 75.00 USD' in text
+    assert Decimal(client.get('/api/collections').json()['currencies']['USD']['days_1_7'])==75
+
+def test_recurring_scheduler_and_invalid_quote(client):
+    from datetime import date
+    from app.main import automation_tick
+    admin_login(client)
+    assert client.post('/api/business-drafts',json={'title':'Bad','invoice':{'amount':'NaN','description':'Bad'}}).status_code==422
+    assert client.post('/api/business-drafts',json={'title':'Monthly','kind':'recurring','next_date':date.today().isoformat(),'invoice':{'amount':'20','description':'Support'}}).status_code==200
+    automation_tick();automation_tick()
+    rows=client.get('/api/business-drafts').json()
+    assert len([x for x in rows if x['kind']=='invoice_draft'])==1
+    assert client.get('/api/payments').json()==[]

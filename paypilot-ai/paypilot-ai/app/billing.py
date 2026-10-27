@@ -101,7 +101,7 @@ def build_pdf(p,meta,items,info):
         rows.append([para(item['description']),para(item['quantity']),para(f"{Decimal(str(item['unit_amount'])):,.2f}"),para(f"{Decimal(str(item['unit_amount']))*item['quantity']:,.2f}")])
     table=Table(rows,colWidths=[265,42,95,105],repeatRows=1,hAlign='LEFT')
     table.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#eaf3ed')),('VALIGN',(0,0),(-1,-1),'TOP'),('LINEBELOW',(0,0),(-1,0),0.7,colors.HexColor('#10734b')),('LINEBELOW',(0,1),(-1,-1),0.25,colors.HexColor('#dde5df')),('TOPPADDING',(0,0),(-1,-1),9),('BOTTOMPADDING',(0,0),(-1,-1),7)]))
-    story+=[Spacer(1,10),table,Spacer(1,16),para('TOTAL  '+money(p['amount']),ParagraphStyle('Total',parent=normal,fontName='PayPilotBold',fontSize=16,leading=22)),para('Balance due: '+money(0 if paid else p['amount']))]
+    story+=[Spacer(1,10),table,Spacer(1,16),para('TOTAL  '+money(p['amount']),ParagraphStyle('Total',parent=normal,fontName='PayPilotBold',fontSize=16,leading=22)),para('Balance due: '+money(p.get('balance_due',0 if paid else p['amount'])))]
     for label,key in [('Payment instructions','payment_instructions'),('Terms','terms')]:
         if info.get(key):story.extend([Spacer(1,12),para(label,ParagraphStyle(label,parent=normal,fontName='PayPilotBold')),para(info[key])])
     if meta.get('notes'):story.extend([Spacer(1,12),para('Notes',muted),para(meta['notes'])])
@@ -118,15 +118,18 @@ def receivables(user=Depends(security.current_user)):
     from .main import public
     with db.engine.connect() as conn:
         rows=conn.execute(select(db.payments).where(db.payments.c.owner_id==user['id'],db.payments.c.mode=='manual')).mappings().all()
+        from .business import balance_rows
+        rows=balance_rows(conn,rows)
         docs={x['payment_id']:x['invoice_number'] for x in conn.execute(select(db.invoice_documents).where(db.invoice_documents.c.owner_id==user['id'])).mappings()}
     groups={};records=[];now=time.time()
     for p in rows:
         amount=Decimal(str(p['amount']));paid=p['status']=='CAPTURED';days=max(0,int((now-p['due_at'])/86400))
         bucket='paid' if paid else 'not_due' if p['due_at']>=now else 'overdue_1_30' if now-p['due_at']<=30*86400 else 'overdue_31_60' if now-p['due_at']<=60*86400 else 'overdue_61_plus'
         group=groups.setdefault(p['currency'],{k:Decimal('0') for k in ('invoiced','paid','not_due','overdue_1_30','overdue_31_60','overdue_61_plus','outstanding')})
-        group['invoiced']+=amount;group[bucket]+=amount
-        if not paid:group['outstanding']+=amount
-        records.append({'number':docs.get(p['id'],'INV-'+p['id'][:8].upper()),'customer_email':p['recipient_email'] or '', 'currency':p['currency'],'amount':f'{amount:.2f}','balance':f'{0 if paid else amount:.2f}','bucket':bucket,'due_date':datetime.fromtimestamp(p['due_at'],timezone.utc).date().isoformat()})
+        group['invoiced']+=amount;group['paid']+=p['paid_amount']
+        if not paid:
+            group[bucket]+=p['balance_due'];group['outstanding']+=p['balance_due']
+        records.append({'number':docs.get(p['id'],'INV-'+p['id'][:8].upper()),'customer_email':p['recipient_email'] or '', 'currency':p['currency'],'amount':f'{amount:.2f}','balance':f"{p['balance_due']:.2f}",'bucket':bucket,'due_date':datetime.fromtimestamp(p['due_at'],timezone.utc).date().isoformat()})
     return {'as_of':datetime.now(timezone.utc).isoformat(),'basis':'Manual invoices only. No FX conversion or tax calculation. Paid balances reflect administrator confirmation.','currencies':{c:{k:f'{v:.2f}' for k,v in g.items()} for c,g in groups.items()},'invoices':records}
 
 @router.get('/api/reports/receivables.csv')
