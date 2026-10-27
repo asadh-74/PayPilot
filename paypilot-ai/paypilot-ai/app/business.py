@@ -100,7 +100,7 @@ def record_installment(pid:str,body:Installment,user=Depends(owner)):
         audit(conn,user['id'],pid,'payment.installment','Verified installment recorded: '+str(body.amount)+' '+p['currency'])
         if body.amount==b['balance_due']:
             capture_local(conn,p)
-            conn.execute(update(db.payment_reports).where(db.payment_reports.c.payment_id==pid,db.payment_reports.c.status=='SUBMITTED').values(status='APPROVED',reviewed_at=time.time()))
+            conn.execute(update(db.payment_reports).where(db.payment_reports.c.payment_id==pid,db.payment_reports.c.status=='SUBMITTED').values(status='CLOSED',reviewed_at=time.time()))
         return public(balances(conn,payment(conn,pid,user['id'])))
 
 class DraftInput(BaseModel):
