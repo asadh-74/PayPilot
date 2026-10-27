@@ -5,7 +5,7 @@
    No credentials or private records are stored in localStorage.
 ===================================================================== */
 
-const CURRENCIES = { PKR:{symbol:'₨',locale:'en-PK'}, USD:{symbol:'$',locale:'en-US'}, EUR:{symbol:'€',locale:'en-IE'}, GBP:{symbol:'£',locale:'en-GB'} };
+const CURRENCIES = { PKR:{symbol:'₨',locale:'en-PK'}, USD:{symbol:'$',locale:'en-US'}, EUR:{symbol:'€',locale:'en-IE'}, GBP:{symbol:'£',locale:'en-GB'}, CAD:{symbol:'CA$',locale:'en-CA'}, AUD:{symbol:'A$',locale:'en-AU'}, SGD:{symbol:'S$',locale:'en-SG'}, AED:{symbol:'AED',locale:'en-AE'}, SAR:{symbol:'SAR',locale:'en-SA'} };
 const fmt = (amt,cur)=> new Intl.NumberFormat(CURRENCIES[cur]?.locale||'en-US',{style:'currency',currency:cur,minimumFractionDigits:2,maximumFractionDigits:2}).format(amt);
 const fmtDate = d => new Date(d+'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
 const daysFromNow = n => { const d=new Date(); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
@@ -14,7 +14,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'
 const DB={business:{name:'My business',instructions:''},customers:[],invoices:[],reviews:[],drafts:[],activity:[],automations:{},automationRuns:[]};
 let signedIn=false;
 
-const invoiceTotal = inv => inv.items.reduce((s,i)=>s+i.qty*i.price,0);
+const invoiceTotal = inv => Number(inv.amount);
 const custName = id => (DB.customers.find(c=>c.id===id)||{name:'—'}).name;
 function invoiceStatus(inv){ // recompute overdue from due date
   if(inv.status==='paid') return 'paid';
@@ -38,7 +38,7 @@ document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeDialog(); if(
 ===================================================================== */
 const TITLES={overview:['Overview','Workspace · This Week'],invoices:['Invoices','Search, filter and manage invoices'],
   create:['New invoice','Create and share a bank-transfer invoice'],review:['Payment review','Verify submitted transfer references'],
-  collections:['Collections','Overdue aging and follow-up priorities'],automations:['Automations','Receipt and reminder workflows'],
+  reports:['Reports','Receivables by currency · manual invoices'],collections:['Collections','Overdue aging and follow-up priorities'],automations:['Automations','Receipt and reminder workflows'],
   drafts:['Message drafts','Receipts, invoice emails and reminders — review before sending'],activity:['Activity','Workspace timeline'],settings:['Settings','Business and bank details']};
 let currentView='overview';
 let invSearch='', invFilter='all';
@@ -135,7 +135,7 @@ function invoiceTable(rows,withActions=true){
     <td class="${st==='overdue'?'':''}" style="${st==='overdue'?'color:var(--danger);font-weight:600':''}">${fmtDate(i.due)}</td>
     ${withActions?`<td class="row-actions">
       <button class="btn btn-ghost btn-sm" data-act="copylink" data-id="${i.id}">Share</button>
-      <button class="btn btn-soft btn-sm" data-act="details" data-id="${i.id}">Details</button>${i.mode==='manual'?`<button class="btn btn-ghost btn-sm" data-act="invoiceemail" data-id="${i.id}">Email invoice</button>`:''}${i.status==='paid'?`<button class="btn btn-ghost btn-sm" data-act="receipt" data-id="${i.id}">Receipt</button>`:''}
+      <a class="btn btn-ghost btn-sm" href="/api/payments/${encodeURIComponent(i.id)}/pdf">PDF</a><button class="btn btn-soft btn-sm" data-act="details" data-id="${i.id}">Details</button>${i.mode==='manual'?`<button class="btn btn-ghost btn-sm" data-act="invoiceemail" data-id="${i.id}">Email invoice</button>`:''}${i.status==='paid'?`<button class="btn btn-ghost btn-sm" data-act="receipt" data-id="${i.id}">Receipt</button>`:''}
     </td>`:''}
   </tr>`}).join('')}</tbody></table>`;
 }
@@ -167,7 +167,7 @@ V.create=function(){
       <div class="form-grid">
         <div class="field"><label for="fCustomer">Customer name</label><input id="fCustomer" maxlength="120" placeholder="Business or customer name" required></div>
         <div class="field"><label for="fEmail">Customer email (optional)</label><input id="fEmail" type="email" maxlength="254" placeholder="billing@customer.example"></div>
-        <div class="field"><label for="fCurrency">Currency</label><select id="fCurrency">${Object.keys(CURRENCIES).map(c=>`<option>${c}</option>`).join('')}</select><p class="small muted">Totals stay in the selected currency.</p></div>
+        <div class="field"><label for="fAddress">Customer billing address</label><textarea id="fAddress" maxlength="800" rows="2" placeholder="Street, city, postal code, country"></textarea></div><div class="field"><label for="fTaxId">Customer tax / registration reference (optional)</label><input id="fTaxId" maxlength="100"></div><div class="field"><label for="fPO">Purchase order (optional)</label><input id="fPO" maxlength="100"></div><div class="field"><label for="fCurrency">Currency</label><select id="fCurrency">${Object.keys(CURRENCIES).map(c=>`<option>${c}</option>`).join('')}</select><p class="small muted">Totals stay in the selected currency.</p></div>
         <div class="field"><label for="fIssued">Issue date</label><input id="fIssued" type="date" value="${daysFromNow(0)}"></div>
         <div class="field"><label for="fDue">Due date</label><input id="fDue" type="date" value="${daysFromNow(14)}"></div>
       </div>
@@ -342,7 +342,7 @@ V.activity=function(){
 };
 
 /* ---------- Settings ---------- */
-V.settings=function(){return `<div class="grid grid-2"><div class="card card-pad"><h2 class="section-title">Business identity</h2><div class="email-readiness"><strong>Email delivery: ${DB.emailReady?'Configured':'Not configured'}</strong><p class="small muted">${DB.emailReady?'An email provider is configured. A send still requires your review; acceptance is shown after the mail server responds.':'For Render Free, configure EMAIL_PROVIDER=resend, RESEND_API_KEY and EMAIL_FROM privately on the server. Standard SMTP ports are blocked on Render Free. No credentials belong in this form.'}</p></div><div class="field"><label for="sName">Business name</label><input id="sName" maxlength="100" value="${esc(DB.business.name)}"></div><p class="muted small">Shown on the customer invoice and receipt page.</p></div><div class="card card-pad"><h2 class="section-title">Bank-transfer instructions</h2><div class="field"><label for="sInstructions">Account details and instructions</label><textarea id="sInstructions" maxlength="2000" rows="9" placeholder="Bank name, account title, IBAN / account number, transfer reference instructions">${esc(DB.business.instructions)}</textarea></div><p class="muted small">Only share the receiving account details your customers need. PayPilot has no connection to your bank.</p></div></div><button id="saveSettings" class="btn btn-primary" style="margin-top:20px">Save business settings</button>`;};
+V.settings=function(){return `<div class="grid grid-2"><div class="card card-pad"><h2 class="section-title">Business identity</h2><div class="email-readiness"><strong>Email delivery: ${DB.emailReady?'Configured':'Not configured'}</strong><p class="small muted">${DB.emailReady?'An email provider is configured. A send still requires your review; acceptance is shown after the mail server responds.':'For Render Free, configure EMAIL_PROVIDER=resend, RESEND_API_KEY and EMAIL_FROM privately on the server. Standard SMTP ports are blocked on Render Free. No credentials belong in this form.'}</p></div><div class="field"><label for="sName">Business name</label><input id="sName" maxlength="100" value="${esc(DB.business.name)}"></div><p class="muted small">Saved with new invoices. Later settings changes will not rewrite their billing details.</p>${[['address','Business address'],['registration_id','Registration / tax reference'],['contact_email','Business contact email'],['website','Business website'],['terms','Default payment terms']].map(([key,label])=>`<div class="field"><label for="b_${key}">${label}</label><textarea id="b_${key}" rows="${key==='address'||key==='terms'?3:1}" maxlength="${key==='address'?800:key==='terms'?1500:key==='registration_id'?100:key==='contact_email'?254:300}">${esc(DB.billing?.[key]||'')}</textarea></div>`).join('')}</div><div class="card card-pad"><h2 class="section-title">Bank-transfer instructions</h2><div class="field"><label for="sInstructions">Account details and instructions</label><textarea id="sInstructions" maxlength="2000" rows="9" placeholder="Bank name, account title, IBAN / account number, transfer reference instructions">${esc(DB.business.instructions)}</textarea></div><p class="muted small">Only share the receiving account details your customers need. PayPilot has no connection to your bank.</p></div></div><button id="saveSettings" class="btn btn-primary" style="margin-top:20px">Save business settings</button>`;};
 
 function emptyState(title,msg,path){
   return `<div class="empty"><div class="empty-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="${path}"/></svg></div><h3>${title}</h3><p>${msg}</p></div>`;
@@ -370,10 +370,10 @@ async function action(button,fn){if(button?.disabled)return;if(button)button.dis
 function showAuth(){document.getElementById('authScreen').style.display='flex';document.getElementById('appShell').classList.remove('active');document.getElementById('publicScreen').classList.add('hidden');document.getElementById('authScreen').querySelector('input')?.focus();}
 function applySnapshot(s){
  DB.database=s.database==='mysql'?'MySQL connected':'Local SQLite';document.getElementById('businessLabel').textContent=s.business.business_name;
- DB.emailReady=Boolean(s.email_ready);DB.business={name:s.business.business_name,instructions:s.business.payment_instructions};
+ DB.emailReady=Boolean(s.email_ready);DB.business={name:s.business.business_name,instructions:s.business.payment_instructions};DB.billing=s.billing_profile||{};
  const meta=new Map(s.metadata.map(m=>[m.payment_id,m]));
  DB.customers=s.invoices.map(p=>({id:p.id,name:meta.get(p.id)?.customer_name||p.recipient_email||'Customer',contact:p.recipient_email||''}));
- DB.invoices=s.invoices.map(p=>{const m=meta.get(p.id),items=s.items.filter(i=>i.payment_id===p.id);return {id:p.id,number:'INV-'+p.id.slice(0,8).toUpperCase(),customerId:p.id,currency:p.currency,status:p.status==='CAPTURED'?'paid':'pending',issued:m?.issued_date||iso(p.created_at),due:iso(p.due_at),notes:m?.notes||'',mode:p.mode,description:p.description,amount:p.amount,items:items.length?items.map(i=>({desc:i.description,qty:i.quantity,price:i.unit_amount})):[{desc:p.description,qty:1,price:p.amount}]};});
+ DB.invoices=s.invoices.map(p=>{const m=meta.get(p.id),items=s.items.filter(i=>i.payment_id===p.id);return {id:p.id,number:(s.invoice_documents||[]).find(d=>d.payment_id===p.id)?.invoice_number||'INV-'+p.id.slice(0,8).toUpperCase(),customerId:p.id,currency:p.currency,status:p.status==='CAPTURED'?'paid':'pending',issued:m?.issued_date||iso(p.created_at),due:iso(p.due_at),notes:m?.notes||'',mode:p.mode,description:p.description,amount:p.amount,items:items.length?items.map(i=>({desc:i.description,qty:i.quantity,price:i.unit_amount})):[{desc:p.description,qty:1,price:p.amount}]};});
  DB.reviews=s.reports.map(r=>({id:r.payment_id,invoiceId:r.payment_id,reference:r.reference,submitted:iso(r.created_at),note:'',status:r.status==='SUBMITTED'?'awaiting':r.status==='APPROVED'?'confirmed':'rejected'}));
  DB.drafts=s.drafts.map(d=>({id:d.id,kind:d.kind,invoiceId:d.payment_id,subject:d.subject,body:d.body,recipient:d.recipient,status:d.status==='SENT'?'sent':'draft',delivery:(s.deliveries||[]).find(x=>x.outbox_id===d.id)?.status,created:iso(d.created_at)}));
  DB.activity=s.activity.map(a=>({at:iso(a.created_at),tone:a.kind.includes('rejected')?'red':a.kind.includes('verified')?'green':'stone',text:a.detail+' · '+a.kind}));
@@ -382,7 +382,7 @@ function applySnapshot(s){
  DB.automationRuns.push(...s.activity.filter(a=>a.kind.startsWith('automation.')).slice(0,12).map(a=>({at:iso(a.created_at),text:a.detail})));
  document.getElementById('reviewCount').textContent=DB.reviews.filter(r=>r.status==='awaiting').length;document.querySelectorAll('[data-review-count]').forEach(el=>el.textContent=DB.reviews.filter(r=>r.status==='awaiting').length);
 }
-async function refreshWorkspace(){const generation=++loadGeneration;const s=await api('/workspace/snapshot');if(generation===loadGeneration)applySnapshot(s);}
+async function refreshWorkspace(){const generation=++loadGeneration;const [s,report]=await Promise.all([api('/workspace/snapshot'),api('/reports/receivables')]);if(generation===loadGeneration){applySnapshot(s);DB.report=report;}}
 async function reloadView(){await refreshWorkspace();if(signedIn)render();}
 function visit(view){navigate(view);if(view!=='create')refreshWorkspace().then(()=>{if(signedIn&&currentView===view)render();}).catch(e=>toast(e.message));}
 function loading(){document.getElementById('viewContainer').innerHTML='<div class="loading-surface" role="status">Loading your workspace…</div>';}
@@ -407,10 +407,10 @@ function bindView(){
   document.getElementById('addItem').onclick=()=>{if(draftItems.length>=30){toast('Maximum 30 line items');return;}draftItems.push({desc:'',qty:1,price:''});renderItems();requestKey=uuid();};
   document.getElementById('itemsBody').oninput=e=>{const t=e.target;if(t.dataset.idx===undefined)return;draftItems[+t.dataset.idx][t.dataset.f]=t.value;requestKey=uuid();updateTotals();};
   document.getElementById('itemsBody').onclick=e=>{const b=e.target.closest('[data-del]');if(b){draftItems.splice(+b.dataset.del,1);renderItems();requestKey=uuid();}};
-  ['fCustomer','fEmail','fCurrency','fIssued','fDue','fNotes'].forEach(id=>document.getElementById(id).addEventListener('input',()=>{requestKey=uuid();}));
+  ['fCustomer','fEmail','fCurrency','fIssued','fDue','fNotes','fAddress','fTaxId','fPO'].forEach(id=>document.getElementById(id).addEventListener('input',()=>{requestKey=uuid();}));
   document.getElementById('saveInvoice').onclick=e=>action(e.currentTarget,saveInvoice);document.getElementById('createEmailInvoice').onclick=e=>action(e.currentTarget,()=>saveInvoice(true));
  }
- if(currentView==='settings')document.getElementById('saveSettings').onclick=e=>action(e.currentTarget,async()=>{const name=document.getElementById('sName').value.trim();if(!name)throw Error('Enter a business name');await api('/workspace','PUT',{business_name:name,payment_instructions:document.getElementById('sInstructions').value.trim()});await reloadView();toast('Business settings saved');});
+ if(currentView==='settings')document.getElementById('saveSettings').onclick=e=>action(e.currentTarget,async()=>{const name=document.getElementById('sName').value.trim();if(!name)throw Error('Enter a business name');await api('/workspace','PUT',{business_name:name,payment_instructions:document.getElementById('sInstructions').value.trim()});await api('/business-profile','PUT',Object.fromEntries(['address','registration_id','contact_email','website','terms'].map(k=>[k,document.getElementById('b_'+k).value.trim()])));await reloadView();toast('Business settings saved for future invoices');});
  document.querySelectorAll('[data-auto]').forEach(input=>input.onchange=()=>action(null,async()=>{try{await api('/automations','PUT',{receipts:input.dataset.auto==='receiptOnConfirm'?input.checked:DB.automations.receiptOnConfirm.on,reminders:input.dataset.auto==='overdueNotice'?input.checked:DB.automations.overdueNotice.on});await reloadView();toast('Automation setting saved');}catch(e){input.checked=!input.checked;throw e;}}));
 }
 function itemCents(item){if(!/^\d+(\.\d{1,2})?$/.test(String(item.price)))throw Error('Use prices with at most two decimal places');const [whole,fraction='']=String(item.price).split('.');return (Number(whole)*100+Number(fraction.padEnd(2,'0')))*Number(item.qty);}
@@ -422,7 +422,7 @@ async function saveInvoice(prepareEmail=false){
  const cents=draftItems.reduce((sum,i)=>sum+itemCents(i),0);if(!Number.isSafeInteger(cents)||cents<=0)throw Error('Check invoice total');
  const issued=document.getElementById('fIssued').value,due=document.getElementById('fDue').value;if(!issued||!due||due<issued)throw Error('Choose a due date on or after the issue date');
  saving=true;try{
- const inv=await api('/payments','POST',{amount:(cents/100).toFixed(2),currency:document.getElementById('fCurrency').value,description:draftItems[0].desc.trim(),recipient_email:email||null,customer_name:customer,notes:document.getElementById('fNotes').value.trim(),issue_date:issued,due_date:due,items:draftItems.map(i=>({description:i.desc.trim(),quantity:+i.qty,unit_amount:Number(i.price).toFixed(2)}))},{'Idempotency-Key':requestKey});
+ const inv=await api('/payments','POST',{amount:(cents/100).toFixed(2),currency:document.getElementById('fCurrency').value,description:draftItems[0].desc.trim(),recipient_email:email||null,customer_name:customer,customer_address:document.getElementById('fAddress').value.trim(),customer_tax_id:document.getElementById('fTaxId').value.trim(),purchase_order:document.getElementById('fPO').value.trim(),notes:document.getElementById('fNotes').value.trim(),issue_date:issued,due_date:due,items:draftItems.map(i=>({description:i.desc.trim(),quantity:+i.qty,unit_amount:Number(i.price).toFixed(2)}))},{'Idempotency-Key':requestKey});
  requestKey=null;draftItems=[{desc:'',qty:1,price:''}];await refreshWorkspace();navigate('invoices');toast('Invoice saved to the database');if(prepareEmail){await api('/payments/'+encodeURIComponent(inv.id)+'/email-draft','POST',{});await refreshWorkspace();navigate('drafts');reviewEmail('invoice-email-'+inv.id);}else await shareInvoice(inv.id);
  }finally{saving=false;}
 }
@@ -502,3 +502,12 @@ function reviewEmail(id){
 }
 
 function reviewRetry(id){openDialog('<h2>Check the email provider first</h2><div class="dialog-body"><p>A timeout can happen after a provider accepts an email. Check the provider delivery records to avoid sending a duplicate.</p><label class="email-confirm"><input type="checkbox" id="retryChecked">I checked the provider records and confirmed this email was not accepted.</label><p id="actionError" role="alert"></p></div><div class="dialog-actions"><button class="btn btn-ghost" data-command="close">Cancel</button><button class="btn btn-primary" id="retryAllow">Allow a new send</button></div>');document.getElementById('retryAllow').onclick=e=>action(e.currentTarget,async()=>{if(!document.getElementById('retryChecked').checked)throw Error('Confirm your provider-record check first');await api('/outbox/'+encodeURIComponent(id)+'/retry-check','POST',{confirmed_not_sent:true});closeDialog();await reloadView();toast('Retry enabled. Review the draft again before sending.');});}
+
+
+V.reports=function(){
+ const report=DB.report||{currencies:{},invoices:[]};
+ const buckets=[['not_due','Not yet due'],['overdue_1_30','1–30 days overdue'],['overdue_31_60','31–60 days overdue'],['overdue_61_plus','61+ days overdue']];
+ return `<section class="card card-pad"><div class="report-head"><div><span class="composer-kicker">RECEIVABLES REPORT</span><h2 class="section-title">Know what is due, in each currency.</h2><p class="muted">${esc(report.basis||'Manual invoices only. No currency conversion.')}</p></div><a class="btn btn-primary" href="/api/reports/receivables.csv">Download CSV</a></div><p class="small muted">Updated ${esc(report.as_of?new Date(report.as_of).toLocaleString():'—')}</p></section>
+ <div class="report-currencies">${Object.entries(report.currencies).map(([currency,g])=>`<section class="card card-pad"><span class="badge draft">${esc(currency)}</span><h2 style="margin:16px 0 4px">${esc(fmt(g.outstanding,currency))}</h2><p class="muted">Outstanding balance</p><div class="divider"></div><div class="totals-row"><span>Total invoiced</span><strong>${esc(fmt(g.invoiced,currency))}</strong></div><div class="totals-row"><span>Payment recorded</span><strong>${esc(fmt(g.paid,currency))}</strong></div>${buckets.map(([key,label])=>`<div class="totals-row"><span>${label}</span><strong>${esc(fmt(g[key],currency))}</strong></div>`).join('')}</section>`).join('')||'<section class="card card-pad"><h2>No manual invoices yet</h2><p>Create an invoice to begin tracking receivables. Demo and sandbox invoices are excluded.</p></section>'}</div>
+ <section class="card card-pad" style="margin-top:20px"><h2 class="section-title">Invoice register</h2><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Customer email</th><th>Due date</th><th>Balance</th><th>Aging</th></tr></thead><tbody>${report.invoices.map(i=>`<tr><td>${esc(i.number)}</td><td>${esc(i.customer_email||'—')}</td><td>${esc(i.due_date)}</td><td>${esc(fmt(i.balance,i.currency))}</td><td>${esc(i.bucket.replaceAll('_',' '))}</td></tr>`).join('')}</tbody></table></div></section>`;
+};

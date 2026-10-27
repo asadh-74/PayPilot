@@ -3,7 +3,7 @@ import re
 from datetime import date, timedelta
 from decimal import Decimal
 
-MONEY = r'(?:PKR|USD|EUR|GBP|CAD|AUD|SGD|Rs\.?|[$€£])\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)(?![\d.,])'
+MONEY = r'(?:PKR|USD|EUR|GBP|CAD|AUD|SGD|AED|SAR|Rs\.?|[$€£])\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)(?![\d.,])'
 
 
 def parse(text, today=None):
@@ -13,13 +13,13 @@ def parse(text, today=None):
         raise ValueError('Describe a customer, service and currency amount.')
     if re.search(r'\b(?:tax|discount|VAT|INR|JPY|BRL|MXN)\b|%',text,re.I):
         raise ValueError('Use the item form for taxes, discounts or unsupported currencies.')
-    if re.search(r'(?<![\w])[-−]\s*(?:(?:PKR|USD|EUR|GBP|CAD|AUD|SGD|Rs\.?|[$€£])\s*)?\d',text,re.I):
+    if re.search(r'(?<![\w])[-−]\s*(?:(?:PKR|USD|EUR|GBP|CAD|AUD|SGD|AED|SAR|Rs\.?|[$€£])\s*)?\d',text,re.I):
         raise ValueError('Quantities and amounts must be positive.')
     email = re.search(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', text)
     emails = re.findall(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', text)
     if len(set(emails)) > 1:
         raise ValueError('Use one customer email per invoice.')
-    codes = {c.upper() for c in re.findall(r'\b(PKR|USD|EUR|GBP|CAD|AUD|SGD)\b', text, re.I)}
+    codes = {c.upper() for c in re.findall(r'\b(PKR|USD|EUR|GBP|CAD|AUD|SGD|AED|SAR)\b', text, re.I)}
     if re.search(r'\bRs\.?\s*\d', text, re.I): codes.add('PKR')
     for symbol, code in [('$','USD'),('€','EUR'),('£','GBP')]:
         if symbol in text and not (symbol=='$' and codes & {'CAD','AUD','SGD'}): codes.add(code)

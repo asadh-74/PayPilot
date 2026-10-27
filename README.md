@@ -108,3 +108,15 @@ node --check app/static/workspace.js
 Tests cover sessions, workspace isolation, exact decimal totals, date validation, customer-page escaping, expiring/revocable links, reference submission/rejection, explicit confirmation, sentence extraction, HTTPS email payload/idempotency, review gates, rejected/uncertain email states, expired email links, receipt/draft deduplication and duplicate-reference safeguards. `tests/workspace_ui.cjs` adds a DOM integration test using `jsdom`: run it against an isolated local server at `http://127.0.0.1:8765` configured with the test-only password used in `tests/test_app.py`. It checks real UI event handlers and API calls; it is not a visual browser test. Never run it against production.
 
 `TEST_MYSQL_URL`, if used, must point to a **disposable test database**: tests drop namespaced tables. Never point tests at Aiven production. This local release was validated with isolated SQLite and DOM execution; live Aiven/MySQL and visual desktop/mobile verification remain release checks.
+
+## Billing upgrade (3.1)
+
+- Private downloadable A4 invoice PDFs with stable workspace invoice numbers.
+- New invoices preserve seller billing details, terms, payment instructions, customer address, tax references and purchase orders as an immutable snapshot. Older invoices are explicitly labeled legacy.
+- Manual invoice tracking supports USD, EUR, GBP, CAD, AUD, SGD, PKR, AED and SAR. Currency totals remain separate; no FX conversion is applied.
+- Receivables dashboard and CSV register separate paid, not-yet-due and overdue balances by currency. Demo/sandbox invoices are excluded.
+- Customer PDF access uses the same expiring, revocable share capability as the invoice page. Administrator exports remain workspace-scoped.
+
+These are portfolio/business-workflow features, not country-specific tax compliance or bank settlement verification. PDF fonts support Latin text; comprehensive multilingual/RTL typesetting is not implemented. No new paid service is required.
+
+Validation: 55 isolated SQLite backend tests passed, including PDF extraction, immutable billing snapshots, access isolation, revoked shares, sequential numbering/idempotency and currency-separated aging. Never point destructive test fixtures at the production database.

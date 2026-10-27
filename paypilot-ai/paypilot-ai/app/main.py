@@ -49,7 +49,7 @@ async def lifespan(app):
             worker.join(timeout=25)
         db.engine.dispose()
 
-app = FastAPI(title='PayPilot API', version='3.0.0', lifespan=lifespan,
+app = FastAPI(title='PayPilot API', version='3.1.0', lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
 app.mount('/static', StaticFiles(directory=STATIC), name='static')
 
@@ -97,6 +97,9 @@ class PaymentInput(BaseModel):
     recipient_email: str | None = Field(default=None, max_length=254)
     due_days: int = Field(default=7, ge=0, le=365)
     customer_name: str = Field(default='', max_length=120)
+    customer_address: str = Field(default='', max_length=800)
+    customer_tax_id: str = Field(default='', max_length=100)
+    purchase_order: str = Field(default='', max_length=100)
     notes: str = Field(default='', max_length=2000)
     issue_date: date | None = None
     due_date: date | None = None
@@ -106,8 +109,8 @@ class PaymentInput(BaseModel):
     @classmethod
     def currency_supported(cls, value):
         value = value.upper()
-        if value not in {'USD','EUR','GBP','CAD','AUD','SGD','PKR'}:
-            raise ValueError('Choose USD, EUR, GBP, CAD, AUD, SGD, or PKR')
+        if value not in {'USD','EUR','GBP','CAD','AUD','SGD','PKR','AED','SAR'}:
+            raise ValueError('Choose USD, EUR, GBP, CAD, AUD, SGD, PKR, AED, or SAR')
         return value
 
     @field_validator('recipient_email')
@@ -198,7 +201,7 @@ def health():
     try:
         with db.engine.connect() as conn:
             conn.execute(text('SELECT 1'))
-        return {'status':'ok','database':db.engine.dialect.name,'version':'3.0.0'}
+        return {'status':'ok','database':db.engine.dialect.name,'version':'3.1.0'}
     except Exception:
         raise HTTPException(503,'Database is not ready')
 
@@ -271,8 +274,8 @@ def create_payment(body: PaymentInput,request: Request,user=Depends(security.cur
     if not re.fullmatch(r'[a-zA-Z0-9_-]{8,64}',key):
         raise HTTPException(422,'Provide an 8–64 character Idempotency-Key')
     mode='demo' if user['role']=='demo' else 'sandbox' if os.getenv('PAYMENT_MODE','manual')=='sandbox' else 'manual'
-    if mode=='sandbox' and body.currency=='PKR':
-        raise HTTPException(422,'PKR is available for manual payment tracking only')
+    if mode=='sandbox' and body.currency in {'PKR','AED','SAR'}:
+        raise HTTPException(422,'This currency is available for manual payment tracking only')
     fingerprint=hashlib.sha256(body.model_dump_json().encode()).hexdigest()
     now=time.time()
     with db.engine.begin() as conn:
@@ -289,13 +292,15 @@ def create_payment(body: PaymentInput,request: Request,user=Depends(security.cur
                 raise HTTPException(409,'Workspace invoice limit reached')
             pid=uid()
             p=dict(id=pid,owner_id=user['id'],idempotency_key=key,request_hash=fingerprint,
-                **body.model_dump(exclude={'due_days','items','customer_name','notes','issue_date','due_date'}),status='PENDING' if mode=='sandbox' else 'CREATED',
+                **body.model_dump(exclude={'due_days','items','customer_name','notes','issue_date','due_date','customer_address','customer_tax_id','purchase_order'}),status='PENDING' if mode=='sandbox' else 'CREATED',
                 mode=mode,
                 created_at=now,updated_at=now,due_at=datetime.combine(body.due_date,datetime.max.time(),tzinfo=timezone.utc).timestamp() if body.due_date else now+body.due_days*86400)
             conn.execute(db.payments.insert().values(**p))
             conn.execute(db.invoice_metadata.insert().values(payment_id=pid,owner_id=user['id'],customer_name=body.customer_name.strip() or 'Customer',notes=body.notes,issued_date=(body.issue_date or datetime.now(timezone.utc).date()).isoformat()))
             for position,item in enumerate(body.items):
                 conn.execute(db.items.insert().values(id=uid(),payment_id=pid,position=position,**item.model_dump()))
+            from .billing import freeze_invoice
+            freeze_invoice(conn,p,body,count+1)
             audit(conn,user['id'],pid,'invoice.created','Payment details confirmed by user')
     if p['mode']=='sandbox' and p['status']=='PENDING':
         base=os.getenv('APP_BASE_URL','').rstrip('/')
@@ -636,6 +641,9 @@ def customer_invoice(token: str):
         prefs=conn.execute(select(db.workspace_preferences).where(db.workspace_preferences.c.owner_id==p['owner_id'])).mappings().first()
         report=conn.execute(select(db.payment_reports).where(db.payment_reports.c.payment_id==p['id'])).mappings().first()
         meta=conn.execute(select(db.invoice_metadata).where(db.invoice_metadata.c.payment_id==p['id'])).mappings().first()
+        from .billing import document_info
+        billing=document_info(conn,p)
+        if billing.get('historical_snapshot'):prefs=billing
     paid=p['status']=='CAPTURED'
     checkout=''
     if not paid and p['mode']=='sandbox' and (p['approve_link'] or '').startswith('https://www.sandbox.paypal.com/'):
@@ -649,13 +657,13 @@ def customer_invoice(token: str):
         checkout='<p>This demo invoice does not accept real payments. The workspace owner can simulate capture.</p>'
     customer=escape((meta or {}).get('customer_name') or 'Customer')
     notes=escape((meta or {}).get('notes') or '')
-    desc=escape(p['description']); ref=escape(p['id']); amount=f"{p['amount']:.2f} {p['currency']}"
+    desc=escape(p['description']); ref=escape(billing['invoice_number']); amount=f"{p['amount']:.2f} {p['currency']}"
     due=datetime.fromtimestamp(p['due_at'],timezone.utc).strftime('%d %b %Y')
     lines='<table><thead><tr><th>DESCRIPTION</th><th>QTY</th><th>UNIT PRICE</th><th>TOTAL</th></tr></thead><tbody>'+''.join(f"<tr><td>{escape(i['description'])}</td><td>{i['quantity']}</td><td>{i['unit_amount']:.2f}</td><td>{i['quantity']*i['unit_amount']:.2f} {p['currency']}</td></tr>" for i in line_items)+'</tbody></table>' if line_items else ''
     document_mode='MANUAL PAYMENT RECORD' if p['mode']=='manual' else 'SANDBOX / DEMO'
     disclaimer='PayPilot records invoices and payment confirmations. Bank transfers occur outside this app; payment status is verified manually by the business owner.' if p['mode']=='manual' else 'No real funds move in sandbox or demo mode.'
     business=escape((prefs or {}).get('business_name') or 'PayPilot')
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PayPilot invoice</title><link rel="stylesheet" href="/static/workspace.css"></head><body><main class="customer-document"><a class="brand" href="/">◈ PayPilot</a><article class="card"><span class="eyebrow">{'PAYMENT RECEIPT' if paid else 'INVOICE'} · {document_mode}</span><p class="eyebrow">{business}</p><h1>{desc}</h1><p>Bill to: {customer}</p><p>Reference {ref}</p><p>{notes}</p>{lines}<h2>Total {amount}</h2><p>Due {due} UTC</p><p>Status: {'Payment confirmed' if paid else 'Awaiting payment'}</p>{checkout}<hr><p>{disclaimer} This private link expires in 24 hours and can be revoked by its owner.</p><button class="secondary" id="print-document">Print / Save PDF</button><p class="caption">Use your browser’s Save as PDF destination.</p></article></main><script src="/static/document.js"></script></body></html>"""
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PayPilot invoice</title><link rel="stylesheet" href="/static/workspace.css"></head><body><main class="customer-document"><a class="brand" href="/">◈ PayPilot</a><article class="card"><span class="eyebrow">{'PAYMENT RECEIPT' if paid else 'INVOICE'} · {document_mode}</span><p class="eyebrow">{business}</p><h1>{desc}</h1><p>Bill to: {customer}</p><p>Invoice {ref}</p><pre>{escape(billing.get("customer_address", ""))}</pre><p>{escape("Purchase order: "+billing["purchase_order"]) if billing.get("purchase_order") else ""}</p><p>{notes}</p>{lines}<h2>Total {amount}</h2><p>Due {due} UTC</p><p>Status: {'Payment confirmed' if paid else 'Awaiting payment'}</p>{checkout}<hr><p>{disclaimer} This private link expires in 24 hours and can be revoked by its owner.</p><a class="btn btn-soft" href="/api/customer/{escape(token,quote=True)}/pdf">Download invoice PDF</a><button class="secondary" id="print-document">Print / Save PDF</button><p class="caption">Use your browser’s Save as PDF destination.</p></article></main><script src="/static/document.js"></script></body></html>"""
 
 @app.post('/api/payments/{pid}/reminder-preview')
 def reminder_preview(pid: str,user=Depends(security.current_user)):
@@ -679,7 +687,7 @@ def cleanup_demo_workspaces():
         for owner in stale:
             ids=select(db.payments.c.id).where(db.payments.c.owner_id==owner)
             conn.execute(delete(db.items).where(db.items.c.payment_id.in_(ids)))
-            for table in (db.email_deliveries,db.invoice_metadata,db.payment_reports,db.share_links,db.automation_runs,db.outbox,db.events,db.settings,db.payments):
+            for table in (db.invoice_documents,db.business_profiles,db.email_deliveries,db.invoice_metadata,db.payment_reports,db.share_links,db.automation_runs,db.outbox,db.events,db.settings,db.payments):
                 conn.execute(delete(table).where(table.c.owner_id==owner))
             conn.execute(delete(db.sessions).where(db.sessions.c.user_id==owner))
             conn.execute(delete(db.users).where(db.users.c.id==owner))
@@ -803,7 +811,10 @@ def workspace_snapshot(user=Depends(security.current_user)):
         rule=conn.execute(select(db.settings).where(db.settings.c.owner_id==user['id'])).mappings().one()
         prefs=conn.execute(select(db.workspace_preferences).where(db.workspace_preferences.c.owner_id==user['id'])).mappings().first()
         run=conn.execute(select(db.automation_runs).where(db.automation_runs.c.owner_id==user['id'])).mappings().first()
-    return {'invoices':[public(r) for r in invoices], 'metadata':[public(r) for r in metadata],
+        from .billing import business_profile
+        profile=business_profile(conn,user['id'])
+        documents=conn.execute(select(db.invoice_documents).where(db.invoice_documents.c.owner_id==user['id'])).mappings().all()
+    return {'billing_profile':profile,'invoice_documents':[{'payment_id':d['payment_id'],'invoice_number':d['invoice_number']} for d in documents],'invoices':[public(r) for r in invoices], 'metadata':[public(r) for r in metadata],
         'items':[public(r) for r in line_items], 'reports':[public(r) for r in reports],
         'drafts':[public(r) for r in messages], 'deliveries':[public(r) for r in deliveries], 'email_ready':mail_service.ready(),'email_provider':mail_service.provider(), 'activity':[public(r) for r in activity],
         'rules':{'receipts':bool(rule['receipts']),'reminders':bool(rule['reminders'])},
@@ -920,3 +931,7 @@ def resolve_email_retry(message_id: str,body: RetryCheck,user=Depends(security.c
         conn.execute(update(db.email_deliveries).where(db.email_deliveries.c.outbox_id==message_id).values(status='FAILED',error='Administrator checked provider records and confirmed no acceptance.'))
         audit(conn,user['id'],None,'email.retry_allowed','Administrator confirmed no acceptance at the provider. A new explicit send is required.')
     return {'status':'FAILED','message':'Retry enabled. Review the draft again before sending.'}
+
+
+from .billing import router as billing_router
+app.include_router(billing_router)

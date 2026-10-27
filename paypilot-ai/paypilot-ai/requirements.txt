@@ -5,3 +5,5 @@ pydantic>=2.9,<3
 SQLAlchemy>=2.0,<3
 PyMySQL[rsa]>=1.1,<2
 python-dotenv>=1.0,<2
+
+reportlab>=4.4,<6

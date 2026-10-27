@@ -599,3 +599,49 @@ def test_old_reminder_cannot_be_sent_after_payment(client,monkeypatch):
         conn.execute(update(db.payments).where(db.payments.c.id==p['id']).values(status='CAPTURED'))
         conn.execute(db.outbox.insert().values(id='stale-reminder',owner_id=conn.execute(select(db.payments.c.owner_id).where(db.payments.c.id==p['id'])).scalar_one(),payment_id=p['id'],recipient='recipient@unit-test.test',kind='reminder',subject='Reminder',body='Old reminder',status='DRAFT',created_at=0))
     assert client.post('/api/outbox/stale-reminder/send',json={'reviewed':True}).status_code==409
+
+def test_billing_snapshot_pdf_and_revocation(client,monkeypatch,tmp_path):
+    from pypdf import PdfReader
+    from io import BytesIO
+    monkeypatch.setenv('PAYMENT_MODE','manual')
+    client.post('/api/auth/login',json={'password':'test-only-password-long-enough'})
+    assert client.put('/api/business-profile',json={'address':'Paris, France','terms':'Pay within 14 days'}).status_code==200
+    p=create(client,customer_name='René Studio',customer_address='12 Example Street',purchase_order='PO-42').json()
+    client.put('/api/business-profile',json={'address':'Changed address'})
+    pdf=client.get(f"/api/payments/{p['id']}/pdf")
+    assert pdf.status_code==200 and pdf.content.startswith(b'%PDF')
+    text=''.join(page.extract_text() for page in PdfReader(BytesIO(pdf.content)).pages)
+    assert 'Paris, France' in text and 'Changed address' not in text
+    assert '125.50 USD' in text and 'PO-42' in text and 'René' in text
+    token=client.post(f"/api/payments/{p['id']}/share").json()['path'].split('/')[-1]
+    assert client.get(f'/api/customer/{token}/pdf').status_code==200
+    client.delete(f"/api/payments/{p['id']}/share")
+    assert client.get(f'/api/customer/{token}/pdf').status_code==404
+    demo(client)
+    assert client.get(f"/api/payments/{p['id']}/pdf").status_code==404
+
+def test_receivables_currency_aging_and_csv(client,monkeypatch):
+    import time
+    monkeypatch.setenv('PAYMENT_MODE','manual')
+    client.post('/api/auth/login',json={'password':'test-only-password-long-enough'})
+    p=create(client,amount='0.30',currency='AED').json()
+    create(client,amount='2.50',currency='SAR')
+    with db.engine.begin() as conn:
+        conn.execute(update(db.payments).where(db.payments.c.id==p['id']).values(due_at=time.time()-40*86400))
+    report=client.get('/api/reports/receivables').json()
+    assert report['currencies']['AED']['overdue_31_60']=='0.30'
+    assert report['currencies']['SAR']['outstanding']=='2.50'
+    assert 'INV-' in client.get('/api/reports/receivables.csv').text
+    demo(client)
+    assert client.get('/api/reports/receivables').json()['invoices']==[]
+
+def test_invoice_numbers_idempotent(client,monkeypatch):
+    monkeypatch.setenv('PAYMENT_MODE','manual')
+    client.post('/api/auth/login',json={'password':'test-only-password-long-enough'})
+    body={'amount':'10','description':'Test'}
+    for _ in range(2):
+        assert client.post('/api/payments',headers={'Idempotency-Key':'billing-test-key'},json=body).status_code==200
+    create(client)
+    docs=client.get('/api/workspace/snapshot').json()['invoice_documents']
+    assert len(docs)==2
+    assert sorted(d['invoice_number'][-6:] for d in docs)==['000001','000002']

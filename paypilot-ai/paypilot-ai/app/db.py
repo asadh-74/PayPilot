@@ -65,6 +65,12 @@ email_deliveries = Table('pp_email_deliveries', metadata,
     Column('status', String(24), nullable=False),
     Column('attempted_at', Float(53)), Column('accepted_at', Float(53)),
     Column('error', String(240)))
+business_profiles = Table('pp_business_profiles', metadata,
+    Column('owner_id', String(64), primary_key=True), Column('data_json', Text, nullable=False))
+invoice_documents = Table('pp_invoice_documents', metadata,
+    Column('payment_id', String(36), primary_key=True), Column('owner_id', String(64), nullable=False, index=True),
+    Column('invoice_number', String(40), nullable=False), Column('data_json', Text, nullable=False),
+    UniqueConstraint('owner_id', 'invoice_number', name='pp_owner_invoice_number'))
 engine = None
 
 def init_db():
