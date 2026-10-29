@@ -26,4 +26,7 @@ jobs:
         working-directory: paypilot-ai/paypilot-ai
         env:
           TEST_MYSQL_URL: mysql+pymysql://root:test-only-password@127.0.0.1:3306/paypilot_test
-      - run: node --check paypilot-ai/paypilot-ai/app/static/app.js
+      - run: |
+          node --check paypilot-ai/paypilot-ai/app/static/workspace.js
+          node --check paypilot-ai/paypilot-ai/app/static/business.js
+          node --check paypilot-ai/paypilot-ai/app/static/command-center.js
