@@ -1,6 +1,8 @@
 # PayPilot — invoice and manual payment management
 
-A private FastAPI application for invoices, customer bank-transfer references, administrator review, receipts, collections and message drafts. The editorial light interface uses warm off-white surfaces, an emerald accent, responsive navigation and accessible dialogs.
+> **October 2026 hackathon status:** The hosted app is currently documented as manual bank-transfer invoicing. PayPal Sandbox code is present but an end-to-end test-buyer checkout is not yet verified. The invoice sentence editor uses deterministic extraction; the separate AI provider abstraction is not yet wired into that editor. Do not describe the deployed application as processing real PayPal payments or as having verified model-powered invoice extraction. See [HACKATHON_SUBMISSION.md](HACKATHON_SUBMISSION.md) for validation and demo requirements.
+
+A private FastAPI application for invoices, customer bank-transfer references, administrator review, receipts, collections and message drafts. The interface uses a dark enterprise fintech theme with a separate authenticated Command Center, responsive navigation and accessible-dialog design targets.
 
 **PayPilot does not process payments, connect to a bank, or independently verify transfers.** A submitted reference leaves the invoice unpaid until the administrator checks the bank statement and explicitly confirms it. No PayPal configuration is required in manual mode. Emails remain drafts until an administrator reviews the recipient and content and explicitly sends them through a configured server-side provider.
 
