@@ -1,11 +1,9 @@
 # PayPilot — invoice and receivables workflow
 
-
 > **October 2026 hackathon status:** The hosted app is currently documented as manual bank-transfer invoicing. PayPal Sandbox code is present but an end-to-end test-buyer checkout is not yet verified. The invoice sentence editor uses deterministic extraction; the separate AI provider abstraction is not yet wired into that editor. Do not describe the deployed application as processing real PayPal payments or as having verified model-powered invoice extraction. See [HACKATHON_SUBMISSION.md](HACKATHON_SUBMISSION.md) for validation and demo requirements.
 > **Portfolio readiness checked 5 November 2026:** Render's latest deployment is marked live. The public `/health` endpoint returned `{"status":"ok","database":"mysql","version":"3.2.0"}`. The configured mode is manual bank-transfer tracking; email is not configured, the invoice sentence parser is offline/deterministic, and PayPal Sandbox credentials are absent. The workspace at the root URL requires the administrator password. `DEMO_ENABLED=false`, so there is no guest login. `/static/preview.html` is a design-only preview. Do not give clients the administrator password or imply that the preview proves a working transaction.  
 >  
 > **Submission guidance:** PayPilot is presentable as a source-code and engineering case study with reproducible local demo instructions and fictional data. The hosted authenticated app is not ready for a self-serve client walkthrough until a dedicated isolated demo account/recording is provided. No actual app screenshots or demo video are currently bundled; `portfolio/cover.png` is a marketing cover, not an application screenshot.  
-
 
 A private FastAPI application for invoices, customer bank-transfer references, administrator review, receipts, collections and message drafts. The interface uses a dark enterprise fintech theme with a separate authenticated Command Center, responsive navigation and accessible-dialog design targets.
 
