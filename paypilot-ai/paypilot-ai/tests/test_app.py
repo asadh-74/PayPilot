@@ -695,9 +695,9 @@ def test_quote_conversion_retries_and_cancel(client,monkeypatch):
     assert client.post('/api/business-drafts/'+id2+'/convert').status_code==409
 
 def test_recurring_drafts_only_and_no_duplicate(client):
-    from datetime import date
+    from datetime import date,datetime,timezone
     admin_login(client)
-    r=client.post('/api/business-drafts',json={'title':'Monthly support','kind':'recurring','next_date':date.today().isoformat(),'invoice':{'amount':'150','description':'Support'}})
+    r=client.post('/api/business-drafts',json={'title':'Monthly support','kind':'recurring','next_date':datetime.now(timezone.utc).date().isoformat(),'invoice':{'amount':'150','description':'Support'}})
     assert r.status_code==200
     assert client.post('/api/recurring/prepare').json()['prepared']==1
     assert client.post('/api/recurring/prepare').json()['prepared']==0
@@ -726,12 +726,27 @@ def test_partial_payment_pdf_and_stale_reminder(client,monkeypatch):
     assert Decimal(client.get('/api/collections').json()['currencies']['USD']['days_1_7'])==75
 
 def test_recurring_scheduler_and_invalid_quote(client):
-    from datetime import date
+    from datetime import date,datetime,timezone
     from app.main import automation_tick
     admin_login(client)
     assert client.post('/api/business-drafts',json={'title':'Bad','invoice':{'amount':'NaN','description':'Bad'}}).status_code==422
-    assert client.post('/api/business-drafts',json={'title':'Monthly','kind':'recurring','next_date':date.today().isoformat(),'invoice':{'amount':'20','description':'Support'}}).status_code==200
+    assert client.post('/api/business-drafts',json={'title':'Monthly','kind':'recurring','next_date':datetime.now(timezone.utc).date().isoformat(),'invoice':{'amount':'20','description':'Support'}}).status_code==200
     automation_tick();automation_tick()
     rows=client.get('/api/business-drafts').json()
     assert len([x for x in rows if x['kind']=='invoice_draft'])==1
     assert client.get('/api/payments').json()==[]
+
+
+def test_quote_conversion_ignores_local_calendar_date(client,monkeypatch):
+    from datetime import date,datetime,timezone
+    from app import business
+    class FutureLocalDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2099,1,1)
+    monkeypatch.setattr(business,'date',FutureLocalDate)
+    admin_login(client)
+    r=client.post('/api/business-drafts',json={'title':'Timezone regression','invoice':{'amount':'200','description':'Consulting'}})
+    assert r.status_code==200
+    converted=client.post('/api/business-drafts/'+r.json()['id']+'/convert')
+    assert converted.status_code==200,converted.text

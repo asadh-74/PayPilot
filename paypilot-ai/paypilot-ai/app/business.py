@@ -140,7 +140,7 @@ def convert(id:str,request:Request,user=Depends(owner)):
         lock(conn,user);row=scoped(conn,db.business_drafts,id,user)
         if row['status']=='CANCELLED':raise HTTPException(409,'Draft was cancelled')
         if row['status']=='DRAFT':
-            payload.update(issue_date=date.today().isoformat(),due_date=None)
+            payload.update(issue_date=datetime.now(timezone.utc).date().isoformat(),due_date=None)
             conn.execute(update(db.business_drafts).where(db.business_drafts.c.id==id).values(status='CONVERTING',data_json=json.dumps(payload)))
         else:payload=json.loads(row['data_json'])
     scope=dict(request.scope);scope['headers']=[(b'idempotency-key',('draft-'+id).encode())]
@@ -158,7 +158,7 @@ def cancel(id:str,user=Depends(owner)):
 
 @router.post('/api/recurring/prepare')
 def prepare_recurring(user=Depends(owner)):
-    today=date.today();created=0
+    today=datetime.now(timezone.utc).date();created=0
     with db.engine.begin() as conn:
         lock(conn,user)
         rows=conn.execute(select(db.business_drafts).where(db.business_drafts.c.owner_id==user['id'],db.business_drafts.c.kind=='recurring',db.business_drafts.c.status=='ACTIVE',db.business_drafts.c.next_date<=today.isoformat())).mappings().all()

@@ -1,3 +1,7 @@
+## Interactive submission demo
+
+[Open the isolated demo](https://paypilot-6ca4.onrender.com/static/demo.html): start a fresh workspace, create a USD invoice, simulate payment, and inspect a receipt. All funds and notifications are simulated. Customer management, quotes and installments remain in the private administrator workspace.
+
 # PayPilot — invoice and receivables workflow
 
 > **Portfolio readiness checked 5 November 2026:** Render's latest deployment is marked live. The public `/health` endpoint returned `{"status":"ok","database":"mysql","version":"3.2.0"}`. The configured mode is manual bank-transfer tracking; email is not configured, the invoice sentence parser is offline/deterministic, and PayPal Sandbox credentials are absent. The workspace at the root URL requires the administrator password. `DEMO_ENABLED=false`, so there is no guest login. `/static/preview.html` is a design-only preview. Do not give clients the administrator password or imply that the preview proves a working transaction.  
