@@ -1,32 +1,39 @@
-# PayPilot — client demonstration
+# PayPilot — 75-second portfolio demo plan
 
-## Upwork project title
-Invoice & Receivables Automation — FastAPI, MySQL & Python
+## Current access and truth
 
-## Description
-PayPilot helps small businesses manage customers, prepare quotes, issue invoices, record verified bank-transfer installments, and monitor outstanding balances. Monthly templates prepare reviewable invoice drafts. The workspace includes nine currencies, downloadable PDF invoices, aging reports and CSV exports. Duplicate transfer references, overpayments and duplicate quote conversions are blocked. Customer emails require explicit review before sending.
+Checked 5 November 2026: Render health responded with MySQL and application version 3.2.0. The hosted root requires the administrator password and public demo mode is disabled. The public preview at `/static/preview.html` is design-only. The connected live configuration is manual payment tracking, no email provider, no PayPal Sandbox credentials, and an offline deterministic sentence parser.
 
-Built with Python, FastAPI, SQLAlchemy, MySQL and responsive HTML/CSS/JavaScript. Payment tracking is manual; the app does not process bank transfers or independently verify settlement.
+Use the repository's isolated local setup and fictional data for a real interaction recording. Do not sign in to the hosted administrator workspace for a public recording, expose the password, or enter genuine customer/bank details. The built-in demo data is an example, not automatically imported into production.
 
-## Three-minute walkthrough
-1. **0:00–0:20 — Problem:** “Small businesses lose time copying billing details and chasing balances. PayPilot brings those tasks into one workspace.” Show the Overview.
-2. **0:20–0:45 — Customer reuse:** Add fictional Cedar Studio with `billing@cedar.example`, then select it in New invoice. Show address autofill.
-3. **0:45–1:10 — Quote:** Add two consulting sessions at USD 100 each. Save as quote, review it, then issue the invoice. Explain that repeated clicks do not create duplicate invoices.
-4. **1:10–1:40 — Payment ledger:** In a disposable local demo only, record a fictional USD 50 installment with reference `DEMO-TRANSFER-001`. Show USD 150 remaining and download the PDF. Never pretend this fictional record is a bank transaction.
-5. **1:40–2:00 — Reports:** Show outstanding amounts and aging, separated by currency. Export the CSV.
-6. **2:00–2:25 — Monthly work:** Save a monthly support template, prepare its due draft, and review before issuing. Explain that scheduled preparation runs only while the server is awake and automation is enabled.
-7. **2:25–2:45 — Reliability:** Attempt the same transfer again to show deduplication; demonstrate an overpayment rejection. Explain stale reminders are blocked after balance changes.
-8. **2:45–3:00 — Close:** Show the mobile navigation and summarize the workflow. No real email or payment is needed for this demonstration.
+## 75-second recording script
 
-## Screenshot checklist
-Capture actual app screens using fictional data: Overview, reusable customer directory, quote review, partial-payment ledger, receivables by currency, and an invoice PDF. Exclude credentials, private bank details, real customer information and expiring access tokens. Screenshots are not bundled with this document.
+- **0–10 sec — Problem:** “PayPilot organizes customer billing, invoice follow-up and payment records in one reviewable workspace.”
+- **10–25 sec — Customer and quote:** Add a fictional customer, create a quote for three design sessions at USD 400 each, and show the USD 1,200 total before saving.
+- **25–40 sec — Invoice:** Convert the reviewed quote to an invoice; show the saved line items and due date.
+- **40–55 sec — Installment:** In the isolated demo workspace, record a fictional USD 400 installment with a reference beginning `DEMO-`; show the remaining USD 800 balance. State clearly that it is a simulated record, not a bank transfer.
+- **55–66 sec — Reporting and safety:** Show the currency-separated receivables report and audit event. Point out duplicate reference protection and human review.
+- **66–75 sec — Close:** “The app tracks manual payment workflows. It does not move money or confirm a bank transfer automatically.” End on the report and GitHub repository.
 
-## Demo data
-Use `docs/demo-data.json` as a manual entry guide. It is fictional and is not automatically imported into the production account.
+## Screenshots to capture from the real app
 
-## Boundaries
-- Bank transfers are recorded after human verification; no bank API settlement integration.
-- Quotes are internal reviewable drafts; customer quote acceptance and signed contracts are not implemented.
-- Recurring templates create drafts, not automatically sent invoices; free hosting can sleep.
-- No tax engine, FX conversion, refunds or accounting reconciliation certification.
-- Mobile CSS and DOM workflows are tested; device-specific visual testing remains useful.
+After starting a fresh local app using the README's SQLite/test settings, capture:
+1. Overview with fictional customer/invoice rows.
+2. Quote review showing line items and the total.
+3. Invoice details after quote conversion.
+4. Installment ledger showing USD 400 received and USD 800 remaining.
+5. Currency-separated report or CSV preview.
+
+The website cards currently use drawn illustrations. The existing `portfolio/cover.png` is a marketing graphic, not evidence of app state. Save screenshots only from the isolated demo workspace; crop out local paths, cookies, credentials and personal data. Include a label such as “Local demo with fictional data.”
+
+## Sample inputs
+
+- Customer: Cedar Studio — `billing@cedar.example`
+- Quote: three brand-design sessions at USD 400 each; due in 14 days
+- Installment: USD 400; reference `DEMO-TRANSFER-001`
+
+These values are fictional. Reserved `.example` addresses must not be used for sending.
+
+## What is tested and what is not
+
+The repository README reports 61 isolated SQLite tests passed. The live health endpoint was verified on 5 November 2026. The public authenticated app has no guest account; Render Free may sleep between visits. No actual screen recording, live email delivery, PayPal Sandbox capture, bank integration, or model-backed invoice extraction has been verified. Record the video only after the local workflow above succeeds on screen.
