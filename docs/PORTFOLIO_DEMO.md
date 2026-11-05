@@ -29,8 +29,8 @@ The website cards currently use drawn illustrations. The existing `portfolio/cov
 ## Sample inputs
 
 - Customer: Cedar Studio — `billing@cedar.example`
-- Quote: three brand-design sessions at USD 400 each; due in 14 days
-- Installment: USD 400; reference `DEMO-TRANSFER-001`
+- Quote: two consulting sessions at USD 100 each; due in 14 days
+- Installment: USD 50; reference `DEMO-TRANSFER-001`
 
 These values are fictional. Reserved `.example` addresses must not be used for sending.
 
