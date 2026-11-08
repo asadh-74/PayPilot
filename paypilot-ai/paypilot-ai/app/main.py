@@ -212,6 +212,7 @@ def health():
 def config():
     return {'email_ready':mail_service.ready(),'email_provider':mail_service.provider(),'admin_configured':len(os.getenv('ADMIN_PASSWORD',''))>=16,
             'sandbox_ready':bool(paypal.client_id and paypal.client_secret),
+            'demo_payment_mode':'paypal_sandbox' if os.getenv('DEMO_PAYMENT_MODE','simulated').lower()=='sandbox' and paypal.client_id and paypal.client_secret and os.getenv('APP_BASE_URL','').startswith('https://') else 'simulated',
             'demo_enabled':os.getenv('DEMO_ENABLED','false')=='true',
             'database':db.engine.dialect.name,
             'persistence':'ephemeral demo storage' if db.engine.dialect.name=='sqlite' else 'persistent MySQL',
@@ -276,7 +277,11 @@ def create_payment(body: PaymentInput,request: Request,user=Depends(security.cur
     key=request.headers.get('idempotency-key','')
     if not re.fullmatch(r'[a-zA-Z0-9_-]{8,64}',key):
         raise HTTPException(422,'Provide an 8–64 character Idempotency-Key')
-    mode='demo' if user['role']=='demo' else 'sandbox' if os.getenv('PAYMENT_MODE','manual')=='sandbox' else 'manual'
+    # Public workspaces can opt into a real PayPal Sandbox checkout without
+    # changing the administrator's manual-payment mode. No live-money mode exists.
+    demo_sandbox=(user['role']=='demo' and os.getenv('DEMO_PAYMENT_MODE','simulated').lower()=='sandbox'
+                  and bool(paypal.client_id and paypal.client_secret) and os.getenv('APP_BASE_URL','').startswith('https://'))
+    mode='sandbox' if demo_sandbox or (user['role']=='admin' and os.getenv('PAYMENT_MODE','manual')=='sandbox') else 'demo' if user['role']=='demo' else 'manual'
     if mode=='sandbox' and body.currency in {'PKR','AED','SAR'}:
         raise HTTPException(422,'This currency is available for manual payment tracking only')
     fingerprint=hashlib.sha256(body.model_dump_json().encode()).hexdigest()
@@ -310,7 +315,13 @@ def create_payment(body: PaymentInput,request: Request,user=Depends(security.cur
         if not base.startswith('https://'):
             raise HTTPException(503,'Configure an HTTPS APP_BASE_URL before sandbox checkout')
         try:
-            order=paypal.create_order(p['amount'],p['currency'],p['description'],p['id'],base+'/return?invoice='+p['id'],base+'/cancel')
+            if user['role']=='demo':
+                return_url=base+'/static/demo.html?paypal_return=1&invoice='+p['id']
+                cancel_url=base+'/static/demo.html?paypal_cancelled=1&invoice='+p['id']
+            else:
+                return_url=base+'/return?invoice='+p['id']
+                cancel_url=base+'/cancel'
+            order=paypal.create_order(p['amount'],p['currency'],p['description'],p['id'],return_url,cancel_url)
             link=paypal.approve_link(order)
             if not link or not link.startswith('https://www.sandbox.paypal.com/'):
                 raise ValueError('Unexpected approval URL')
@@ -601,8 +612,13 @@ def retry_checkout(pid: str, user=Depends(security.current_user)):
     if not base.startswith('https://'):
         raise HTTPException(503,'Configure an HTTPS APP_BASE_URL')
     try:
-        order=paypal.create_order(p['amount'],p['currency'],p['description'],pid,
-            base+'/return?invoice='+pid,base+'/cancel')
+        if user['role']=='demo':
+            return_url=base+'/static/demo.html?paypal_return=1&invoice='+pid
+            cancel_url=base+'/static/demo.html?paypal_cancelled=1&invoice='+pid
+        else:
+            return_url=base+'/return?invoice='+pid
+            cancel_url=base+'/cancel'
+        order=paypal.create_order(p['amount'],p['currency'],p['description'],pid,return_url,cancel_url)
         link=paypal.approve_link(order)
         if not link or not link.startswith('https://www.sandbox.paypal.com/'):
             raise ValueError('Unexpected checkout URL')

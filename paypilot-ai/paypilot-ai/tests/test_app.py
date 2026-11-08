@@ -128,6 +128,30 @@ def test_demo_cannot_simulate_sandbox(client):
         c.execute(update(db.payments).where(db.payments.c.id==pid).values(mode='sandbox'))
     assert client.post(f'/api/payments/{pid}/simulate').status_code==403
 
+def test_demo_can_complete_paypal_sandbox_checkout(client,monkeypatch):
+    demo(client)
+    monkeypatch.setenv('DEMO_PAYMENT_MODE','sandbox')
+    monkeypatch.setenv('APP_BASE_URL','https://paypilot.example')
+    monkeypatch.setattr(paypal,'client_id','test-client')
+    monkeypatch.setattr(paypal,'client_secret','test-secret')
+    created={}
+    def create_order(amount,currency,description,reference_id,return_url,cancel_url):
+        created.update(return_url=return_url,cancel_url=cancel_url,reference_id=reference_id)
+        return {'id':'SANDBOX-ORDER-1','links':[{'rel':'approve','href':'https://www.sandbox.paypal.com/checkoutnow?token=SANDBOX-ORDER-1'}]}
+    monkeypatch.setattr(paypal,'create_order',create_order)
+    p=create(client).json()
+    assert p['mode']=='sandbox' and p['status']=='CREATED'
+    assert p['paypal_order_id']=='SANDBOX-ORDER-1'
+    assert created['reference_id']==p['id']
+    assert created['return_url']==f"https://paypilot.example/static/demo.html?paypal_return=1&invoice={p['id']}"
+    assert created['cancel_url']==f"https://paypilot.example/static/demo.html?paypal_cancelled=1&invoice={p['id']}"
+    assert client.post(f"/api/payments/{p['id']}/simulate").status_code==403
+    monkeypatch.setattr(paypal,'get_order',lambda order_id:{'id':order_id,'status':'APPROVED'})
+    monkeypatch.setattr(paypal,'capture_order',lambda order_id:{'id':order_id,'status':'COMPLETED','purchase_units':[{'payments':{'captures':[{'status':'COMPLETED','amount':{'currency_code':'USD','value':'125.50'}}]}}]})
+    captured=client.post(f"/api/payments/{p['id']}/refresh").json()
+    assert captured['status']=='CAPTURED'
+    assert 'PAYPAL SANDBOX' in client.get(f"/api/payments/{p['id']}/receipt").json()['receipt']
+
 def test_export_formula_escape(client):
     demo(client)
     create(client,description='=HYPERLINK("https://example.com")')

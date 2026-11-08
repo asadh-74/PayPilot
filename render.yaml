@@ -22,5 +22,7 @@ services:
         generateValue: true
       - key: DEMO_ENABLED
         value: "true"
+      - key: DEMO_PAYMENT_MODE
+        value: simulated
       - key: APP_BASE_URL
         sync: false

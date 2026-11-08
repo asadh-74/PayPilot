@@ -7,12 +7,13 @@ PayPilot — invoice drafting, manual transfer review, optional PayPal Sandbox c
 
 - App: https://paypilot-6ca4.onrender.com/
 - Command Center: https://paypilot-6ca4.onrender.com/static/command-center.html
-- No-password design-only preview: https://paypilot-6ca4.onrender.com/static/preview.html
+- Public isolated demo: https://paypilot-6ca4.onrender.com/static/demo.html
 - Repository: https://github.com/asadh-74/PayPilot
 
 ## Current limitations
 - The production README documents `PAYMENT_MODE=manual`. Manual transfers require an administrator to check the bank statement; they are **not PayPal transactions**.
 - `app/paypal_client.py` implements PayPal Sandbox OAuth, Orders v2, order capture and webhook verification. Live sandbox flow is **not proven** merely by the presence of code. `/api/config` exposes whether `sandbox_ready` is true, but not whether a successful checkout occurred.
+- The public demo can create PayPal Sandbox orders when `DEMO_PAYMENT_MODE=sandbox`, server-side Sandbox credentials, and HTTPS `APP_BASE_URL` are configured. Current deployment configuration reports no Sandbox credentials and uses simulated demo payments; no successful Sandbox capture is verified.
 - `app/ai_service.py` supports OpenAI/Anthropic/Ollama and a deterministic fallback. However, `/api/invoice-drafts/parse` currently uses `invoice_parser.parse` rather than calling a model. It is **not accurate** to demonstrate that endpoint as LLM-powered.
 - No actual PayPal webhook replay/production delivery confirmation, email inbox delivery, compliance certification or fraud classifier is proven.
 - The authenticated workspace contains user records; demos must use disposable test records and sanitized screenshots.
@@ -27,7 +28,7 @@ PayPilot — invoice drafting, manual transfer review, optional PayPal Sandbox c
 
 ## Acceptance criteria — verify in disposable sandbox
 ### PayPal
-- In a separate test environment only, set server-side `PAYMENT_MODE=sandbox`, HTTPS `APP_BASE_URL`, `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, and `PAYPAL_WEBHOOK_ID`.
+- For the isolated hosted demo, keep private `PAYMENT_MODE=manual`; set `DEMO_PAYMENT_MODE=sandbox`, HTTPS `APP_BASE_URL`, and server-side Sandbox `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET`. For the private administrator workspace, use `PAYMENT_MODE=sandbox` only in a separate controlled test deployment. Set `PAYPAL_WEBHOOK_ID` only when verifying webhook events.
 - Create a **USD** test invoice (not PKR: PayPal currency support differs); verify a valid PayPal Sandbox order and approval URL are created.
 - Complete the checkout with a Sandbox buyer account. Verify a matching order ID, amount, currency, merchant account and captured status before marking paid.
 - Send a correctly signed webhook and verify signature succeeds. Reject unsigned/forged, mismatched and replayed events.

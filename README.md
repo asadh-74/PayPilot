@@ -1,16 +1,16 @@
 ## Interactive submission demo
 
-[Open the isolated demo](https://paypilot-6ca4.onrender.com/static/demo.html): start a fresh workspace, create a USD invoice, simulate payment, and inspect a receipt. All funds and notifications are simulated. Customer management, quotes and installments remain in the private administrator workspace.
+[Open the isolated demo](https://paypilot-6ca4.onrender.com/static/demo.html): start a fresh workspace, create a USD invoice, then use simulated payment or PayPal Sandbox checkout when configured. No live funds or emails are processed. Customer management, quotes and installments remain in the private administrator workspace.
 
 # PayPilot — invoice and receivables workflow
 
-> **Portfolio readiness checked 5 November 2026:** Render's latest deployment is marked live. The public `/health` endpoint returned `{"status":"ok","database":"mysql","version":"3.2.0"}`. The configured mode is manual bank-transfer tracking; email is not configured, the invoice sentence parser is offline/deterministic, and PayPal Sandbox credentials are absent. The workspace at the root URL requires the administrator password. `DEMO_ENABLED=false`, so there is no guest login. `/static/preview.html` is a design-only preview. Do not give clients the administrator password or imply that the preview proves a working transaction.  
+> **Deployment status checked 9 November 2026:** Render marks the latest main-branch deployment live. The public `/api/config` reports persistent MySQL, private payment mode `manual`, no PayPal credentials, public demo enabled with simulated payments, offline invoice parsing, and no email provider. `/health` timed out during this check, so database health is not independently confirmed here. The root workspace is password-protected; use the isolated demo URL above, never share the administrator password.
 >  
-> **Submission guidance:** PayPilot is presentable as a source-code and engineering case study with reproducible local demo instructions and fictional data. The hosted authenticated app is not ready for a self-serve client walkthrough until a dedicated isolated demo account/recording is provided. No actual app screenshots or demo video are currently bundled; `portfolio/cover.png` is a marketing cover, not an application screenshot.  
+> **Submission guidance:** The hosted app has a public isolated demo and a source repository with an MIT license. This does not yet prove a successful PayPal Sandbox transaction or model-backed AI invoice extraction. `portfolio/cover.png` is a marketing cover, not an application screenshot.
 
 A private FastAPI application for invoices, customer bank-transfer references, administrator review, receipts, collections and message drafts. The interface uses a dark enterprise fintech theme with a separate authenticated Command Center, responsive navigation and accessible-dialog design targets.
 
-**PayPilot does not process payments, connect to a bank, or independently verify transfers.** A submitted reference leaves the invoice unpaid until the administrator checks the bank statement and explicitly confirms it. No PayPal configuration is required in manual mode. Emails remain drafts until an administrator reviews the recipient and content and explicitly sends them through a configured server-side provider.
+The private hosted workspace is configured for manual transfers: it does not move live money, connect to a bank, or independently verify transfers. A submitted reference leaves the invoice unpaid until the administrator checks the bank statement and confirms it. An optional PayPal Sandbox mode uses test accounts only and never charges real funds. Emails remain drafts until an administrator reviews the recipient and content and explicitly sends them through a configured server-side provider.
 
 ## Workflow
 
@@ -44,6 +44,7 @@ DATABASE_URL=sqlite:///./paypilot.db
 REQUIRE_MYSQL=false
 COOKIE_SECURE=false
 PAYMENT_MODE=manual
+DEMO_PAYMENT_MODE=simulated
 DEMO_ENABLED=false
 AUTOMATION_ENABLED=false
 ```
@@ -59,9 +60,9 @@ Open **http://localhost:8000**. The connected app must be served by FastAPI; ope
 
 ## Existing Aiven MySQL / Render configuration
 
-The existing verified-TLS SQLAlchemy connection remains intact. Credentials stay server-side. For the existing hosted service retain `DATABASE_URL`, `MYSQL_SSL_CA`, `ADMIN_PASSWORD` and `APP_BASE_URL`; use `REQUIRE_MYSQL=true`, `COOKIE_SECURE=true`, `PAYMENT_MODE=manual`, and `DEMO_ENABLED=false`. Never copy credentials into JavaScript or screenshots.
+The existing verified-TLS SQLAlchemy connection remains intact. Credentials stay server-side. The private hosted workspace uses `PAYMENT_MODE=manual`; public demo invoices use simulated payments by default. To opt the isolated public demo into PayPal test checkout, set `DEMO_PAYMENT_MODE=sandbox`, HTTPS `APP_BASE_URL`, and server-side `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET`. Keep `PAYMENT_MODE=manual` so administrator invoices remain manual. Never copy credentials into JavaScript or screenshots. `PAYPAL_WEBHOOK_ID` is required to verify webhooks.
 
-`render.yaml` remains unchanged in this local integration. Its older demo setting must be overridden to false when approving a release. No Render resources, environment variables, Aiven records or GitHub branches were modified by preparing this change.
+`render.yaml` configures the isolated demo; service secrets and database credentials are managed in Render, not committed here.
 
 The deployment command remains:
 
@@ -69,7 +70,7 @@ The deployment command remains:
 cd paypilot-ai/paypilot-ai && uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
 ```
 
-The backend health check is `/health`. Existing MySQL startup validates certificate and hostname; it does not silently fall back to SQLite. Hosted database readiness still requires a separate approved release check.
+The backend health check is `/health`. Existing MySQL startup validates certificate and hostname; it does not silently fall back to SQLite.
 
 ## Storage and compatibility
 
@@ -102,7 +103,7 @@ Invoice emails contain a private 24-hour customer link and manual-transfer instr
 
 Receipt and overdue-reminder switches are persisted. Manual and scheduled runs use the same deduplication; unpaid invoices awaiting reference review pause reminders. A disabled receipt rule can be caught up by running automation after enabling it or explicitly opening a paid invoice's receipt. Receipt creation is a local business record, not proof supplied by a bank.
 
-The scheduler can run for the administrator workspace while signed out, **only while the server is awake**. Free-host sleep pauses it. There is no guaranteed always-on delivery, bank reconciliation feed, live checkout, FX conversion, inbox-delivery webhooks, password recovery or team management. The single administrator password is configured server-side. Existing sandbox/demo endpoints are retained for compatibility but are not exposed by this private interface; disable demo creation through configuration.
+The scheduler can run for the administrator workspace while signed out, **only while the server is awake**. Free-host sleep pauses it. There is no guaranteed always-on delivery, bank reconciliation feed, live-money checkout, FX conversion, inbox-delivery webhooks, password recovery or team management. The single administrator password is configured server-side. The public demo uses simulated payments unless PayPal Sandbox credentials and `DEMO_PAYMENT_MODE=sandbox` are explicitly configured.
 
 ## Validation
 
